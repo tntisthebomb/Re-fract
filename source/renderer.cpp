@@ -293,7 +293,7 @@ void Renderer::endFrame(const Scene& s,float totalMs,float renderMs,uint64_t job
  else if(estimate*4<target*1.4f)dynamicBlock=std::max(4,dynamicBlock/2);}
 }
 bool Renderer::skipCell(const Scene& s,int x,int y,int eye,int cell){
- if(s.settings.quality||(s.settings.dof&&s.settings.aperture>0)||progressiveActive(s.settings))return false;
+ if(s.settings.quality||(!moving&&((s.settings.dof&&s.settings.aperture>0)||progressiveActive(s.settings))))return false;
  if(!moving&&s.settings.adaptiveTiles&&block<4){
   int cx=std::min(W-1,x+block/2),cy=std::min(H-1,y+block/2);float center=depths[eye][cy*W+cx];Color c=pixels[eye][cy*W+cx];bool flat=center>0;
   for(int dy:{-4,4})for(int dx:{-4,4}){int k=std::max(0,std::min(H-1,cy+dy))*W+std::max(0,std::min(W-1,cx+dx));Color q=pixels[eye][k];
@@ -341,7 +341,7 @@ void Renderer::step(const Scene& s,const Rays& rays,float slider){
   }
   // Only final-pass block anchors are read by the material cache.
   if(!moving)shades[j.eye][j.y*W+j.x]=r.shade;
-  if(r.hit&&o.temporal){history[historyCursor]={r.point,r.color,r.depth*rays.tangent*j.block/H,frame,j.eye};historyCursor=(historyCursor+1)%history.size();historyCount=std::min(history.size(),historyCount+1);}
+  if(r.hit&&o.temporal&&!j.accumulate&&!(o.dof&&o.aperture>0&&!j.moving)){history[historyCursor]={r.point,r.color,r.depth*rays.tangent*j.block/H,frame,j.eye};historyCursor=(historyCursor+1)%history.size();historyCount=std::min(history.size(),historyCount+1);}
  }
 }
 float Renderer::progress(const Scene& s)const{if(done)return 1;int total=((W+block-1)/block)*((H+block-1)/block),lanes=std::min(s.settings.interlace,total);float pass=clamp(float(lane)/lanes+float(index)/total,0,1);if(!moving&&progressiveActive(s.settings)&&(block==1||!s.settings.autoRefine))return (lightingPass+pass)/s.settings.lightingPasses;return pass;}

@@ -310,8 +310,8 @@ int main(int argc,char** argv){
  opticalJob.moving=false;auto sameLens=renderJob(s,rays,opticalJob);
  check(lens.color.r==sameLens.color.r&&lens.color.g==sameLens.color.g&&lens.color.b==sameLens.color.b,"lens sample sequence reproducible");
  // HDR accumulation averages completed lighting passes, with no stale motion/stereo samples.
- s=Scene{};s.settings.previewBlock=16;s.settings.autoRefine=false;s.settings.giSamples=1;s.settings.progressiveLighting=true;s.settings.lightingPasses=3;s.settings.gpuCache=true;
- rays=Rays(s);Renderer progressive;progressive.invalidate(s,false);int progressiveSteps=0;
+ s=Scene{};s.settings.previewBlock=16;s.settings.autoRefine=false;s.settings.giSamples=1;s.settings.progressiveLighting=true;s.settings.lightingPasses=3;s.settings.gpuCache=true;s.settings.temporal=true;
+ rays=Rays(s);Renderer progressive;progressive.beginFrame(s,false,true,1);int progressiveSteps=0;
  while(!progressive.complete()&&progressiveSteps++<2000)progressive.step(s,rays,1);
  check(progressive.complete()&&progressive.accumulatedPasses()==3&&progressive.rays()==uint64_t(25*15*2*3),"progressive pass scheduler covers each stereo cell exactly once per pass");
  Vec sum;for(int pass=0;pass<3;++pass)sum=sum+renderJob(s,rays,{192,112,16,0,-s.settings.eyeSeparation*.5f,false,false,uint32_t(pass),true}).radiance;
@@ -322,6 +322,8 @@ int main(int argc,char** argv){
  bool sameAccumulation=true;for(int eye=0;eye<2;++eye)for(int k=0;k<W*H;++k){auto a=progressive.image(eye)[k],b=parallelProgressive.image(eye)[k];sameAccumulation&=a.r==b.r&&a.g==b.g&&a.b==b.b;}
  check(sameAccumulation,"parallel progressive jobs preserve deterministic stereo accumulation");
  check(!progressive.recolor(s)&&!progressive.captureSurface(s,mesh),"accumulated image cannot masquerade as a single geometric surface capture");
+ progressive.beginFrame(s,true,false,1);progressive.step(s,rays,1);
+ check(progressive.profile().reused==0,"accumulated samples do not seed temporal surface reuse on motion");
  progressive.beginFrame(s,false,false,0);check(!progressive.complete()&&progressive.accumulatedPasses()==0,"stereo change resets progressive accumulation without relying on UI motion");
  progressive.invalidate(s,true);check(progressive.accumulatedPasses()==0,"movement clears accumulated pass count");
  s.settings.lightingPasses=1;progressive.invalidate(s,false);while(!progressive.complete())progressive.step(s,rays,0);
