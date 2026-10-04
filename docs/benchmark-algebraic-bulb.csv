@@ -1,0 +1,4 @@
+preset,exact_ms,algebraic_ms,changed_pixels,mean_channel_error,max_channel_error
+0,7.19955,3.46418,3,0.000666667,1
+1,15.9862,6.23661,0,0,0
+5,6.48056,3.20248,0,0,0

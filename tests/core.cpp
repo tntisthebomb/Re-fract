@@ -103,9 +103,9 @@ int main(int argc,char** argv){
  check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error),"v2 scene roundtrip");
  check(loaded.settings.temporal&&loaded.settings.batchSize==16&&loaded.settings.customGradient&&near(loaded.settings.gradientLow.x,1)&&near(loaded.camera.minimumSpeed,.023f),"new settings persist");
  // Remove only the three v2 extension lines to obtain a legacy v1 scene.
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(n==0)out<<"REFRACT 1\n";else if(n!=2&&(n<5||n>7))out<<line<<'\n';++n;}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0)continue;if(n==0)out<<"REFRACT 1\n";else if(n!=2&&(n<5||n>7))out<<line<<'\n';++n;}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.temporal&&!loaded.settings.customGradient,"legacy v1 file still loads");
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(n==0)out<<"REFRACT 2\n";else if(n!=2)out<<line<<'\n';++n;}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0)continue;if(n==0)out<<"REFRACT 2\n";else if(n!=2)out<<line<<'\n';++n;}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.formula.repeat&&loaded.settings.temporal,"legacy v2 file still loads");
  s=Scene{};rays=Rays(s);
  for(float eye:{-.04f,0.f,.04f})for(float x:{10.f,200.f,390.f}){Vec o,direction;rays.ray(s,x,95,eye,o,direction);float px,py,depth;
@@ -182,6 +182,50 @@ int main(int argc,char** argv){
  s.settings.gradientOffset=.27f;s.settings.exposure=1.31f;
  auto countBefore=parallelColor.rays();check(parallelColor.recolor(s)&&serialColor.recolor(s)&&loops==1&&parallelColor.rays()==countBefore,"parallel recoloring uses persistent-loop interface without ray tracing");
  for(int eye=0;eye<2;++eye){bool equal=true;for(int k=0;k<W*H;++k){auto a=parallelColor.image(eye)[k],b=serialColor.image(eye)[k];equal&=a.r==b.r&&a.g==b.g&&a.b==b.b;}check(equal,"parallel material rows match serial output");}
+ // PICA's sideways projection must agree with CPU camera rays in both eyes.
+ s=Scene{};s.camera.position={.7f,-.2f,-4};s.camera.yaw=.31f;s.camera.pitch=-.19f;rays=Rays(s);
+ for(float eye:{-.04f,0.f,.04f})for(float x:{4.f,200.f,396.f})for(float y:{4.f,120.f,236.f}){
+  Vec origin,direction;rays.ray(s,x,y,eye,origin,direction);Vec point=origin+direction*3;auto m=meshProjection(s,eye);float v[4]={};
+  for(int row=0;row<4;++row)v[row]=m[row*4]*point.x+m[row*4+1]*point.y+m[row*4+2]*point.z+m[row*4+3];
+  check(near(W*.5f*(1-v[1]/v[3]),x,.001f)&&near(H*.5f*(1-v[0]/v[3]),y,.001f),"GPU projection matches off-axis CPU stereo ray");
+  check(v[2]/v[3]>=-1&&v[2]/v[3]<=0,"GPU projection uses PICA depth range");
+ }
+ std::vector<Color> meshColors(W*H,Color{128,64,32});std::vector<float> meshDepths(W*H,3);
+ s=Scene{};s.settings.gpuCache=true;SurfaceMesh mesh=surfaceMesh(s,meshColors,meshDepths,1,0);
+ check(mesh.vertices.size()==6000&&mesh.indices.size()==99*59*6,"surface cache produces bounded indexed grid");
+ int meshLoops=0;SurfaceMesh parallelMesh=surfaceMesh(s,meshColors,meshDepths,1,0,[](int n,LoopBody body,void* ctx,void* counter){++*static_cast<int*>(counter);LoopQueue q;q.reset(n,body,ctx);std::thread worker([&](){q.consume();});q.consume();worker.join();},&meshLoops);
+ bool identicalMesh=mesh.indices==parallelMesh.indices&&mesh.vertices.size()==parallelMesh.vertices.size();
+ for(size_t i=0;i<mesh.vertices.size();++i){auto a=mesh.vertices[i],b=parallelMesh.vertices[i];identicalMesh&=a.position.x==b.position.x&&a.position.y==b.position.y&&a.position.z==b.position.z&&a.color.x==b.color.x&&a.color.y==b.color.y&&a.color.z==b.color.z;}
+ check(meshLoops==1&&identicalMesh,"parallel surface rows preserve vertices and triangle topology exactly");
+ {Scene far=s;far.camera.position={9999,-9999,9999};SurfaceMesh local=surfaceMesh(far,meshColors,meshDepths,1,0);bool same=true;
+  for(size_t i=0;i<mesh.vertices.size();++i){auto a=mesh.vertices[i].position,b=local.vertices[i].position;same&=a.x==b.x&&a.y==b.y&&a.z==b.z;}
+  check(same&&near(local.origin.x,9999),"GPU mesh local coordinates avoid precision loss at large world positions");
+  auto matrix=meshProjection(far,0,local.origin),ordinary=meshProjection(s,0,s.camera.position);check(matrix==ordinary,"recentered GPU projection is independent of large world translation");
+ }
+ bool bounded=true;for(auto i:mesh.indices)bounded&=i<mesh.vertices.size();check(bounded,"mesh indices stay within 16-bit vertex bounds");
+ for(int y=0;y<H;++y)for(int x=0;x<W;++x)if(x>=100&&x<200)meshDepths[y*W+x]=0;
+ mesh=surfaceMesh(s,meshColors,meshDepths,1,0);bool avoidsHoles=true;
+ for(auto i:mesh.indices){int x=int(i%100)*4;avoidsHoles&=x<100||x>=200;}check(avoidsHoles,"mesh triangles exclude missed rays");
+ for(int y=0;y<H;++y)for(int x=0;x<W;++x)meshDepths[y*W+x]=x<200?3:8;
+ mesh=surfaceMesh(s,meshColors,meshDepths,1,0);bool avoidsJump=true;
+ for(size_t k=0;k<mesh.indices.size();k+=3){int a=mesh.indices[k]%100,b=mesh.indices[k+1]%100,c=mesh.indices[k+2]%100;avoidsJump&=(a<50&&b<50&&c<50)||(a>=50&&b>=50&&c>=50);}
+ check(avoidsJump,"mesh rejects triangles bridging depth discontinuities");
+ check(surfaceMesh(s,{},meshDepths,1,0).indices.empty()&&surfaceMesh(s,meshColors,meshDepths,8,0).indices.empty(),"invalid buffers and too-coarse source reject capture");
+ s.settings.meshStride=8;s.settings.meshEdge=.12f;check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error)&&loaded.settings.gpuCache&&loaded.settings.meshStride==8&&near(loaded.settings.meshEdge,.12f),"GPU controls persist in scene v4");
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0)continue;if(line=="REFRACT 4")line="REFRACT 3";out<<line<<'\n';}}
+ check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.gpuCache,"legacy v3 defaults to CPU rendering");
+ s=Scene{};s.settings.gpuCache=true;s.settings.previewBlock=4;s.settings.autoRefine=false;rays=Rays(s);renderer.invalidate(s,false);
+ while(!renderer.complete())renderer.step(s,rays,0);
+ check(renderer.captureSurface(s,mesh)&&!mesh.indices.empty(),"completed single-sample render captures geometry without tracing");
+ renderer.invalidate(s,true);check(!renderer.captureSurface(s,mesh),"moving or unfinished render cannot capture stale mesh");
+ for(int power:{2,4,8,16}){Formula f=preset(0);f.stages[0].a=float(power);f.algebraicBulb=true;f.iterations=1;check(f.validate(error),"algebraic bulb validates editable power");
+  for(int i=0;i<300;++i){Vec p{(i%13-6)*.17f,(i%17-8)*.13f,(i%19-9)*.11f};auto a=distance(f,p),b=distanceGeneric(f,p),exact=distance(f,p,true);
+   check(a.valid==b.valid&&(!a.valid||(near(a.distance,b.distance,2e-5f*std::fmax(1.f,b.distance))&&near(a.trap,b.trap,2e-4f*std::fmax(1.f,b.trap)))),"single algebraic power agrees with trigonometric transform within relative float tolerance");
+   check(exact.valid==b.valid&&exact.distance==b.distance&&exact.trap==b.trap,"exact distance bypasses algebraic bulb approximation");
+  }
+ }
+ s=Scene{};s.formula.algebraicBulb=true;s.settings.quality=true;rays=Rays(s);Scene exactBulb=s;exactBulb.formula.algebraicBulb=false;
+ for(int y=40;y<H;y+=60)for(int x=40;x<W;x+=60){auto a=trace(s,rays,x,y,0),b=trace(exactBulb,rays,x,y,0);check(a.r==b.r&&a.g==b.g&&a.b==b.b,"quality render retains exact bulb math with experiment enabled");}
  if(argc>1){
   std::string prefix=argv[1];s=Scene{};s.settings.previewBlock=4;s.settings.autoRefine=false;
   for(int n=0;n<PresetCount;++n){s.formula=preset(n);s.camera=presetCamera(n);s.settings.farClip=40;s.settings.convergence=-s.camera.position.z;rays=Rays(s);renderer.invalidate(s,false);

@@ -37,11 +37,11 @@ jobs:
           ctest --test-dir host-build --output-on-failure
       - name: Hardware-math flags regression tests
         run: |
-          g++ -pthread -std=c++17 -O3 -fno-math-errno -Wall -Wextra -Werror -Iinclude source/expression.cpp source/formula.cpp source/renderer.cpp source/storage.cpp source/ui.cpp tests/core.cpp -o host-build/hardware-math
+          g++ -pthread -std=c++17 -O3 -fno-math-errno -Wall -Wextra -Werror -Iinclude source/expression.cpp source/formula.cpp source/renderer.cpp source/surface.cpp source/storage.cpp source/ui.cpp tests/core.cpp -o host-build/hardware-math
           ./host-build/hardware-math
       - name: Address and undefined behavior sanitizers
         run: |
-          g++ -pthread -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Werror -Iinclude source/expression.cpp source/formula.cpp source/renderer.cpp source/storage.cpp source/ui.cpp tests/core.cpp -o host-build/sanitized
+          g++ -pthread -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Werror -Iinclude source/expression.cpp source/formula.cpp source/renderer.cpp source/surface.cpp source/storage.cpp source/ui.cpp tests/core.cpp -o host-build/sanitized
           ./host-build/sanitized
   new3ds:
     runs-on: ubuntu-latest

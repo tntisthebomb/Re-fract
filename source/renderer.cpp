@@ -28,7 +28,7 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  // Per-ray counts fit in 32 bits; publish 64-bit totals once, avoiding paired
  // loads/stores on ARM11 for every distance-estimator call.
  uint32_t queries=0,shadingQueries=0,stepsTaken=0;
- auto query=[&](Vec p,bool shading=false){++queries;if(shading)++shadingQueries;return distanceOnly(s.formula,p);};
+ auto query=[&](Vec p,bool shading=false){++queries;if(shading)++shadingQueries;return distanceOnly(s.formula,p,s.settings.quality);};
  auto finish=[&](Color c){result.color=c;result.profile.distanceQueries=queries;result.profile.shadingQueries=shadingQueries;result.profile.steps=stepsTaken;return result;};
  Vec origin,dir;rays.ray(s,x,y,eye,origin,dir);
  float t=0,trap=0;bool hit=false;const Settings& o=s.settings;
@@ -49,7 +49,7 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  Vec background{.025f,.028f,.024f};
  if(!hit)return finish(quantize(background+Vec{.018f,.012f,.006f}*(1-y/H)));
  Vec p=origin+dir*t;result.hit=true;result.point=p;result.depth=t;
- ++queries;++shadingQueries;trap=distance(s.formula,p).trap;
+ ++queries;++shadingQueries;trap=distance(s.formula,p,o.quality).trap;
  if(fast){float fog=std::exp(-t*o.fog);return finish(quantize((gradientColor(o,trap)*fog+background*(1-fog))*o.exposure));}
  float e=std::fmax(o.epsilon,t*o.epsilon*.25f);
  // Tetrahedral normal: four DE evaluations instead of six central differences.
@@ -170,6 +170,12 @@ bool Renderer::recolor(const Scene& s){
  else for(int i=0;i<rows;++i)row(i,&work);
  historyCount=historyCursor=0;++revision;return true;
 }
+bool Renderer::captureSurface(const Scene& s,SurfaceMesh& mesh)const{
+ if(!s.settings.gpuCache||!cacheReady||!done||moving||block>s.settings.meshStride)return false;
+ SurfaceMesh next=surfaceMesh(s,pixels[0],depths[0],block,activeEyes==2?-eyeOffset:0,parallelFor,loopContext);
+ if(next.indices.empty())return false;
+ mesh=std::move(next);return true;
+}
 void Renderer::endFrame(const Scene& s,float totalMs,float renderMs,uint64_t jobs){
  frameMs=totalMs;if(jobs){float cost=renderMs/jobs;averageJobMs=averageJobMs==0?cost:averageJobMs*.8f+cost*.2f;}
  batchLimit=std::max(1,std::min(s.settings.batchSize,int(s.settings.budgetMs*.5f/std::max(.001f,averageJobMs))));
@@ -209,7 +215,7 @@ void Renderer::step(const Scene& s,const Rays& rays,float slider){
  for(int i=0;i<count;++i){const auto& j=jobs[i];const auto& r=results[i];totals.add(r.profile);rayCount+=r.profile.rays;
   for(int yy=j.y;yy<std::min(j.y+j.block,H);++yy){int first=yy*W+j.x,last=yy*W+std::min(j.x+j.block,W);
    std::fill(pixels[j.eye].begin()+first,pixels[j.eye].begin()+last,r.color);
-   if(o.temporal||o.adaptiveTiles)std::fill(depths[j.eye].begin()+first,depths[j.eye].begin()+last,r.depth);
+   if(o.temporal||o.adaptiveTiles||o.gpuCache)std::fill(depths[j.eye].begin()+first,depths[j.eye].begin()+last,r.depth);
    if(o.temporal)std::fill(ages[j.eye].begin()+first,ages[j.eye].begin()+last,0);
   }
   // Only final-pass block anchors are read by the material cache.

@@ -4,7 +4,7 @@ A customizable stereoscopic fractal laboratory for New Nintendo 3DS homebrew, wi
 
 ## Features
 
-- 18 presets across Mandelbulb, Mandelbox, Julia, Menger, Sierpinski and hybrid families. Some entries are parameter variations, not separate mathematical families.
+- 24 presets across Mandelbulb, Mandelbox, Julia, Menger, Sierpinski and hybrid families. Some entries are parameter variations, not separate mathematical families.
 - Optional infinite periodic world repetition with separate X/Y/Z spacing; zero spacing leaves that axis unwrapped.
 - Up to 12 editable formula stages: folds, spherical power, scaling, rotations, offsets, absolute/sort operations, Menger and tetrahedral transforms, and custom expressions.
 - Separate off-axis left/right cameras with slider-controlled stereo strength and adjustable convergence. Slider zero uses one render for both eyes.
@@ -13,6 +13,8 @@ A customizable stereoscopic fractal laboratory for New Nintendo 3DS homebrew, wi
 - Configurable iterations, bailout, distance estimator, derivative scale, step safety, ray steps, lighting, ambient occlusion, shadows, palettes, fog, exposure, camera and stereo geometry.
 - New 3DS high-speed request and optional CPU 2 worker. Both CPUs claim jobs from a shared queue in mono and stereo modes, with automatic serial fallback. Batch size adapts to measured work cost.
 - Completed single-sample images support trace-free gradient edits, with parallel recoloring at fine resolution and one color evaluation per coarse block. Polynomial expression Julia formulas have direct derivative kernels; edited formulas retain the general interpreter.
+- Optional GPU surface-cache navigation: capture a completed traced view, then use PICA200 triangles/depth testing and independent stereo projections to move without retracing. Hidden geometry is absent; lighting/colors are baked. Resume CPU rendering to refresh the cache.
+- Optional algebraic Mandelbulb math for powers 2/4/8/16 with standard angular multipliers. Quality mode retains the original trigonometric path.
 - Eight SD scene slots and PPM stereo-pair export. Saved scenes include custom expressions and all settings.
 
 ## Build / install
@@ -51,6 +53,10 @@ Selecting a preset loads its formula and starting camera. Rendering/material set
 **COLOR** contains named palettes, editable start/end colors (six hexadecimal RGB digits, e.g. FF8040), gradient scale/offset/repetition, a gradient preview strip, and lighting. Editing an endpoint enables the custom gradient. D-pad down scrolls through additional pages; the page count appears above the rows.
 
 **RENDER** includes surface-aware movement, enabled by default. Speed scales with the distance estimate at the camera, reaching full speed at SLOWDOWN DISTANCE. MIN SPEED FRACTION keeps movement possible on/inside a surface. The setting affects forward, sideways and vertical movement; look speed is unchanged. X multiplies the resulting speed. This is navigation assistance, not collision detection, and custom formula distance estimates may be conservative or inaccurate.
+
+For the experimental GPU mode, enable **RENDER → GPU SURFACE CACHE**, allow a stationary single-sample render to finish, then select **CAPTURE GPU SURFACE**. Final render block size must be no larger than GPU MESH SPACING; disable adaptive tile skipping for capture. Move and adjust stereo normally. **RESUME CPU RENDER** traces the current view again; scene edits also return to CPU rendering. GPU NEAR CLIP controls close-surface clipping, and GPU EDGE REJECTION trades fewer holes for more triangles across uneven depth. FILES reports triangle count and GPU drawing time. PPM exports require a fresh CPU render of the current camera. GPU speed/appearance and switching still need hardware validation.
+
+**FORMULA → ALGEBRAIC BULB EXP** is off by default. It replaces inverse trigonometry and sine/cosine with repeated angle doubling for supported bulbs; fractional powers and altered theta/phi multipliers retain the generic path. Small floating-point differences can amplify during repeated iteration. Quality mode bypasses this experiment.
 
 **FORMULA** edits global iteration settings and adds stages. **STAGE** edits the selected stage, changes its operation, reorders, duplicates or deletes it. Changing an operation resets its parameters to useful defaults. **FILES** saves/loads `scene-0.rfs` through `scene-7.rfs` in `sd:/3ds/Re-fract/`; saving replaces that slot. Export replaces `image-N-left.ppm` and `image-N-right.ppm`. An export made before rendering completes contains the current partial frame.
 

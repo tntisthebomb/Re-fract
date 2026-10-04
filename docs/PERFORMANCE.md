@@ -35,18 +35,18 @@ Mono exports share the same retained image rather than copying every rendered pi
 
 `core_benchmark` traces the same 1,500 rays for Mandelbulb, Mandelbox, Menger and expression Julia, printing milliseconds and an image checksum. Pass a filename to write raw RGB samples for comparison. Compare builds with identical compiler flags and run several repetitions; desktop time is not a New 3DS FPS estimate. Timing instrumentation and an extra hit-color query can offset savings for some formulas. No universal speedup is claimed.
 
-GPU mesh extraction/caching and GPU-based stereo warping are not implemented. They require a separate geometry/rasterization path and hardware profiling; this update does not claim GPU ray marching or compute shaders.
+A depth-image GPU surface cache is implemented as an opt-in experiment (see below). Full volumetric mesh extraction and GPU ray marching remain unimplemented. Hardware performance has not been measured.
 
-Scene format v3 also saves world repetition and still reads v1/v2 scenes. Older application builds cannot read v3 saves.
+Scene format v4 saves GPU cache controls and the algebraic-bulb toggle; it still reads v1/v2/v3 scenes. Older application builds cannot read v4 saves.
 
 ## GPU opportunities
 
 The current application still evaluates fractal geometry on the CPU. PICA200 has programmable vertex/geometry processing and a configurable, non-programmable fragment stage. A conventional per-pixel distance-estimator ray-marching shader is therefore unavailable.
 
-Potential additional backends, not implemented in this build:
+GPU backend options:
 
 - **Cached surface mesh**: sample/extract geometry on CPU, then use the GPU for stereo projection, triangles, depth testing, and lighting. Camera movement over cached geometry can avoid most repeated fractal evaluation. Formula edits and exploration outside the cache rebuild it; finite mesh resolution loses small detail.
-- **Depth-image mesh**: triangulate recent CPU surface samples and render them from each eye. Cheaper than extracting a volume, but hidden surfaces need fresh rays, and depth discontinuities need explicit triangle rejection.
+- **Depth-image mesh (implemented, experimental)**: capture a completed CPU view, triangulate its samples, then rasterize the fixed cache from both eye cameras. Hidden surfaces are absent; depth jumps are rejected. It must be refreshed with CPU rendering.
 - **Preview scaling and UI drawing**: render fewer CPU samples, upload a texture, and let the GPU enlarge/filter and composite it. This saves transfer/compositing work; it does not make each fractal evaluation cheaper. Upload and synchronization costs need hardware measurement.
 
 Primary references: [3DS fragment pipeline](https://3dbrew.org/wiki/Nintendo_OpenGL), [devkitPro textured GPU example](https://github.com/devkitPro/3ds-examples/blob/master/graphics/gpu/textured_cube/source/main.c).
@@ -97,4 +97,26 @@ The console build explicitly targets VFPv2 with `-mfpu=vfp` and enables `-fno-ma
 
 Host comparisons against `74024719e30a9718beefb395618a626ef22a30d3` use the existing alternating ten-run benchmark and reject changed pixel checksums. Results are in [default workload](benchmark-optimization-default.csv) and [lit workload](benchmark-optimization-lit.csv). The polynomial expression Julia is substantially faster on the host. Small timing differences for other formulas are not evidence of a console speedup. The benchmark measures tracing; panel caching, buffer writes and parallel recoloring are additional changes outside its timed workload. Attempted tiled and reversed framebuffer conversions were slower on the host and were discarded. The tested scalar conversion is retained.
 
-This pass completes CPU/cache work within the existing backend. The proposed GPU mesh and vertex-sampling backends above remain unimplemented; no GPU speedup or globally optimal implementation is claimed. Actual frame budgets, worker scaling, VFP gains, display-cache behavior and stereo comfort still require New 3DS testing. Existing approximate modes remain opt-in.
+This pass completes CPU/cache work within the existing backend. Volumetric mesh extraction and vertex-sampling ray-marching backends remain unimplemented; the next pass below adds a depth-image surface cache. No GPU speedup or globally optimal implementation is claimed. Actual frame budgets, worker scaling, VFP gains, display-cache behavior and stereo comfort still require New 3DS testing. Existing approximate modes remain opt-in.
+
+## GPU surface-cache navigation
+
+Enable **RENDER → GPU SURFACE CACHE**, finish a stationary single-sample render, then choose **CAPTURE GPU SURFACE**. Capture rejects partial/moving renders, multisampled quality renders, adaptive-tile results, empty meshes and source blocks larger than GPU MESH SPACING. Grid positions and colors come from the completed first-eye view. Independent grid rows use the persistent parallel worker; triangle assembly stays sequential. At spacing 4 the cache has at most 6,000 vertices and 11,682 triangles, stored with 16-bit indices.
+
+The GPU uses a small PICA vertex shader to transform positions and pass vertex colors, fixed fragment combiners to display those colors, and hardware depth testing/rasterization. It renders left/right projections separately only when stereo is effectively active. GPU navigation does not call the CPU ray renderer. Camera slowdown still evaluates one distance estimate for navigation. Capture coordinates are relative to the original camera, limiting float24 cancellation at large world positions.
+
+GPU MESH SPACING controls the sampling grid (4/8/16). GPU EDGE REJECTION bounds depth changes within a triangle: smaller values create more holes, larger values risk bridges across disconnected surfaces. GPU NEAR CLIP controls near-plane clipping separately from the CPU ray's hit epsilon. FILES shows mesh triangle count and GPU DRAW MS. This is GPU draw duration, not full application frame time or full-fractal refresh rate.
+
+Use **RESUME CPU RENDER** to trace the new viewpoint, then capture again. Scene/formula/material edits automatically return to CPU rendering. Stereo-slider changes update the GPU projection without tracing. Image exports require CPU rendering of the current view; the app rejects exports of the stale capture viewpoint while navigating. The scene file stores cache settings, not the mesh or active navigation state. Allocation/setup failures retain a CPU fallback.
+
+This is a finite visible-surface cache, not a volumetric fractal mesh. Newly exposed surfaces and the back of the object are missing, vertex colors interpolate, and lighting/fog/specular are baked into the capture. A new stereo eye can reveal holes because only the first eye supplied geometry. Moving far from the capture requires a new trace. The backend is compiled and its CPU projection/topology tested, but actual GPU rendering, display orientation, switching, sleep/resume, low-memory behavior and performance require hardware validation. It remains off by default.
+
+Implementation follows devkitPro's [GPU triangle example](https://github.com/devkitPro/3ds-examples/blob/master/graphics/gpu/simple_tri/source/main.c), Citro3D's [frame/transfer lifecycle](https://github.com/devkitPro/citro3d/blob/master/source/renderqueue.c), and [tilted perspective/depth convention](https://github.com/devkitPro/citro3d/blob/master/source/maths/mtx_persptilt.c). Uploaded buffers are flushed once; each GPU frame explicitly flushes its command list instead of all linear memory. CPU and GPU top-screen swaps are kept separate; previous GPU work is synchronized before changing display mode or returning to CPU output.
+
+## Algebraic bulb experiment
+
+**FORMULA → ALGEBRAIC BULB EXP** uses normalized meridian/azimuth components and repeated complex angle doubling for standard powers 2, 4, 8 and 16. Both angular multipliers must be 1. Radial exponent/derivative tracking remain unchanged. Unsupported/custom powers and angle multipliers use the original implementation. Quality distance and coloring queries explicitly bypass the algebraic path.
+
+The [host benchmark](benchmark-algebraic-bulb.csv) alternates the two modes over ten measured repetitions after two warmups, taking medians for 1,500 shaded rays per preset. Sampled Mandelbulb 8/2 and Julia Bulb traces take approximately 51–61% less desktop time. Mandelbulb 8 differs at 3 of 1,500 pixels by at most one channel value; the other two sampled images match. These measurements do not establish New 3DS gains or bounds on arbitrary zooms. Repeated iteration and finite-difference shading can amplify floating-point differences. The experiment is off by default.
+
+Six additional presets bring the browser to 24 entries. Their editable operation chains are documented in FORMULAS.md. PPM exports now write the packed RGB image in one buffered operation rather than one call per pixel.
