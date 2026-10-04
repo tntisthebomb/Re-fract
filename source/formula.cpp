@@ -36,6 +36,12 @@ bool Formula::validate(std::string& error){
  }
  if(!enabled){error="Enable at least one stage";return false;}
  activeCount=0;for(size_t i=0;i<stages.size();++i)if(stages[i].enabled)active[activeCount++]=int(i);
+ kernel=0;
+ auto is=[&](int n,Kind kind){return stages[active[n]].kind==kind;};
+ if(activeCount==3&&is(0,Kind::BoxFold)&&is(1,Kind::SphereFold)&&is(2,Kind::Scale))kernel=1;
+
+
+ else if(activeCount==3&&is(0,Kind::Tetra)&&is(1,Kind::Scale)&&is(2,Kind::Offset))kernel=3;
  error.clear();return true;
 }
 namespace {
@@ -79,7 +85,7 @@ Formula preset(int n){
  }
  std::string error;f.validate(error);return f;
 }
-template<bool Trap> Sample evaluateDistance(const Formula& f,Vec p){
+template<bool Trap> Sample evaluateGenericDistance(const Formula& f,Vec p){
  Vec z=p,c=f.julia?f.constant:p;float dr=1,trap=1e6f,r=0;
  for(int i=0;i<f.iterations;++i){
   if(z.dot(z)>f.bailout*f.bailout)break;
@@ -138,6 +144,45 @@ template<bool Trap> Sample evaluateDistance(const Formula& f,Vec p){
  d=std::fmax(0.f,d)/f.derivativeScale;
  return {d,Trap?std::sqrt(trap):0.f,std::isfinite(d)};
 }
+template<Kind Fixed,bool Trap> inline bool applyStage(const Formula& f,const Stage& s,Vec& z,Vec c,float& dr,float& trap){
+   switch(Fixed){
+    case Kind::BoxFold:{float limit=std::fabs(s.a);auto fold=[limit](float v){float bounded=v< -limit?-limit:v>limit?limit:v;return 2*bounded-v;};z={fold(z.x),fold(z.y),fold(z.z)};break;}
+    case Kind::SphereFold:{float r2=z.dot(z),min2=s.minimum2,fixed2=s.fixed2;
+     float k=r2<min2?s.innerScale:r2<fixed2?fixed2/std::fmax(r2,1e-12f):1;
+     z=z*k;dr*=k;break;
+    }
+    case Kind::Scale:z=z*s.a+c*s.b;dr=dr*std::fabs(s.a)+(f.julia?0:std::fabs(s.b));break;
+    case Kind::Offset:z=z+Vec{s.a,s.b,s.c};break;
+    case Kind::Tetra:
+     if(z.x+z.y<0){float t=z.x;z.x=-z.y;z.y=-t;}
+     if(z.x+z.z<0){float t=z.x;z.x=-z.z;z.z=-t;}
+     if(z.y+z.z<0){float t=z.y;z.y=-z.z;z.z=-t;}break;
+    default:return false;
+   }
+   if(!std::isfinite(z.x)||!std::isfinite(z.y)||!std::isfinite(z.z)||!std::isfinite(dr)||dr>1e30f)return false;
+   if constexpr(Trap){float squared=z.dot(z);if(squared<trap)trap=squared;}
+ return true;
+}
+template<bool Trap,int Kernel=0> Sample evaluateDistance(const Formula& f,Vec p){
+ Vec z=p,c=f.julia?f.constant:p;float dr=1,trap=1e6f,r=0;
+ for(int i=0;i<f.iterations;++i){
+  if(z.dot(z)>f.bailout*f.bailout)break;
+  if constexpr(Kernel==1){
+   if(!applyStage<Kind::BoxFold,Trap>(f,f.stages[f.active[0]],z,c,dr,trap)||!applyStage<Kind::SphereFold,Trap>(f,f.stages[f.active[1]],z,c,dr,trap)||!applyStage<Kind::Scale,Trap>(f,f.stages[f.active[2]],z,c,dr,trap))return {0,trap,false};
+  }else if constexpr(Kernel==3){
+   if(!applyStage<Kind::Tetra,Trap>(f,f.stages[f.active[0]],z,c,dr,trap)||!applyStage<Kind::Scale,Trap>(f,f.stages[f.active[1]],z,c,dr,trap)||!applyStage<Kind::Offset,Trap>(f,f.stages[f.active[2]],z,c,dr,trap))return {0,trap,false};
+  }else return evaluateGenericDistance<Trap>(f,p);
+ }
+ r=z.length();float d=f.logarithmic?.5f*std::log(std::fmax(r,1e-12f))*r/std::fmax(dr,1e-12f):r/std::fmax(dr,1e-12f);
+ if(f.terminal==1){Vec q{std::fabs(z.x)-f.terminalRadius,std::fabs(z.y)-f.terminalRadius,std::fabs(z.z)-f.terminalRadius};
+  Vec outside{std::fmax(q.x,0.f),std::fmax(q.y,0.f),std::fmax(q.z,0.f)};
+  d=(outside.length()+std::fmin(std::fmax(q.x,std::fmax(q.y,q.z)),0.f))/std::fmax(dr,1e-12f);
+ }else if(f.terminal==2){
+  d=(std::fmax(-z.x-z.y-z.z,std::fmax(-z.x+z.y+z.z,std::fmax(z.x-z.y+z.z,z.x+z.y-z.z)))-f.terminalRadius)*.57735027f/std::fmax(dr,1e-12f);
+ }
+ d=std::fmax(0.f,d)/f.derivativeScale;
+ return {d,Trap?std::sqrt(trap):0.f,std::isfinite(d)};
+}
 namespace {
 Vec repeatPoint(const Formula& f,Vec p){if(!f.repeat)return p;auto wrap=[](float v,float period){return period>0?v-period*std::floor(v/period+.5f):v;};return {wrap(p.x,f.repeatPeriod.x),wrap(p.y,f.repeatPeriod.y),wrap(p.z,f.repeatPeriod.z)};}
 }
@@ -147,6 +192,12 @@ float repeatBoundaryStep(const Formula& f,Vec point,Vec direction){
  auto axis=[&](float p,float d,float period){if(period<=0||std::fabs(d)<1e-12f)return;float boundary=d>0?period*.5f:-period*.5f;step=std::fmin(step,std::fmax(0.f,(boundary-p)/d));};
  axis(local.x,direction.x,f.repeatPeriod.x);axis(local.y,direction.y,f.repeatPeriod.y);axis(local.z,direction.z,f.repeatPeriod.z);return step;
 }
-Sample distance(const Formula& f,Vec p){return evaluateDistance<true>(f,repeatPoint(f,p));}
-Sample distanceOnly(const Formula& f,Vec p){return evaluateDistance<false>(f,repeatPoint(f,p));}
+template<bool Trap> Sample dispatch(const Formula& f,Vec p){
+ if(f.kernel==1)return evaluateDistance<Trap,1>(f,p);
+ if(f.kernel==3)return evaluateDistance<Trap,3>(f,p);
+ return evaluateGenericDistance<Trap>(f,p);
+}
+Sample distance(const Formula& f,Vec p){return dispatch<true>(f,repeatPoint(f,p));}
+Sample distanceOnly(const Formula& f,Vec p){return dispatch<false>(f,repeatPoint(f,p));}
+Sample distanceGeneric(const Formula& f,Vec p,bool trap){p=repeatPoint(f,p);return trap?evaluateGenericDistance<true>(f,p):evaluateGenericDistance<false>(f,p);}
 }

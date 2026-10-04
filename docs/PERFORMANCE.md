@@ -56,3 +56,28 @@ Primary references: [3DS fragment pipeline](https://3dbrew.org/wiki/Nintendo_Ope
 **FORMULA → WORLD REPEAT** wraps the sampled world position into a centered periodic cell before fractal iteration. It repeats the complete fractal, rather than inserting a modulo operation inside every fractal iteration. X/Y/Z spacing is independent; zero leaves an axis unwrapped. Start NEGATIVE BOX with spacing 16 on X/Z and 0 on Y for an endless horizontal arrangement, or 16 on every axis for a volume of copies.
 
 There is no outermost tile, but FAR CLIP and RAY STEPS still limit visible distance and work. Spacing that is too small crops the original shape at cell boundaries; increase it if seams/cut surfaces appear. Ray advances stop at cell boundaries before evaluating the next cell, and experimental step relaxation is bypassed for repeated worlds. This does not replace a distance estimator with a certified signed-distance field.
+
+## Measured CPU optimization pass
+
+Common Mandelbox and tetrahedral stage sequences now select straight-line kernels at formula validation. All stage parameters remain editable; extra transforms use the generic interpreter. The specialized and generic paths share the same terminal-distance rules and preserve intermediate validity checks and orbit traps. Differential tests include Julia mode, repetition, disabled stages and added rotations.
+
+Shading skips specular math when its strength is zero, stops AO once its final clamped minimum is reached, and omits shadow queries when neither diffuse nor specular can contribute. Menu callbacks and displayed values are retained until edits, tab changes or relevant camera updates; the FILES telemetry refreshes four times per second. **UI FRAME / TRACE MS** reports actual application-frame and CPU trace durations, not completed-fractal FPS.
+
+Desktop measurements compare commit `8ff163b9e2a7874e4781cfd33c2040a98250c05a` with this pass. Both binaries use GCC `-O3`, identical sample coordinates and 1,500 rays per preset. The script alternates binaries, discards two warmups, takes ten-run medians, and rejects changed pixel checksums. The lit workload uses six AO samples, 32 shadow steps and zero specular. Results are in [default workload](benchmark-desktop-default.csv) and [lit workload](benchmark-desktop-lit.csv). Preset IDs are 0 Mandelbulb, 6 Mandelbox, 7 Negative Box, 10 Menger, 12 tetrahedral and 16 expression Julia.
+
+These are host timings, not New 3DS measurements. Tiny changes can be scheduling noise. The native UI/cache changes are not included in the portable benchmark. Broad LTO and math-errno flag experiments did not produce consistent improvements and were not enabled. Mandelbulb and Menger specializations were also not retained after comparison.
+
+Reproduce a comparison with two builds of `tests/benchmark.cpp`:
+
+```sh
+python tools/compare_benchmarks.py path/to/before path/to/after --runs 10
+python tools/compare_benchmarks.py path/to/before path/to/after --runs 10 --lit
+```
+
+## Repurposing programmable GPU stages
+
+A separate experimental approach would calculate one ray sample per **vertex shader invocation**, then expand the sample into a small screen-space primitive with a geometry shader. Start with a 100x60 sample grid and a fixed Mandelbox kernel: box folding, sphere inversion and scaling fit the GPU's arithmetic better than a general expression evaluator. Supply camera/eye parameters as uniforms, cap ray steps and fractal iterations, and preserve the CPU quality path. The geometry shader can emit triangles, as demonstrated in devkitPro's [geometry example](https://github.com/devkitPro/3ds-examples/blob/master/graphics/gpu/geoshader/source/program.g.pica).
+
+This is a proposed backend, not a shipped GPU renderer or a measured speedup. PICA shader storage, registers, flow control and reduced floating-point precision constrain it; primitive generation and divergence can erase expected gains. See the reverse-engineered [instruction set](https://3dbrew.org/wiki/Shader_Instruction_Set).
+
+The fragment stage exposes fixed combiners and lighting configuration, rather than arbitrary executable fragment programs. Those operations can assist compositing and shading of supplied surfaces. Emulating an iterative distance estimator through many render-to-texture passes would incur repeated writes/reads and constrained state precision; it is a less promising first prototype than the vertex-sampling approach. The available combiner configuration is visible in [citro3d's API](https://github.com/devkitPro/citro3d/blob/master/include/c3d/texenv.h).

@@ -130,6 +130,19 @@ int main(int argc,char** argv){
  check(repeatBoundaryStep(repeated,{0,0,0},{0,1,0})>1e20f,"zero spacing disables one repetition axis");
  s=Scene{};s.formula=repeated;check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error)&&loaded.formula.repeat&&near(loaded.formula.repeatPeriod.z,16),"world repetition scene roundtrip");
  repeated.repeatPeriod.x=.001f;check(!repeated.validate(error),"unsafe tiny repetition spacing rejected");
+ // Specialized pipelines must preserve arbitrary parameter edits and stage semantics.
+ for(int n=0;n<PresetCount;++n)for(int variant=0;variant<4;++variant){Formula f=preset(n);
+  if(variant==1){f.julia=true;f.constant={.17f,-.21f,.09f};f.repeat=true;f.repeatPeriod={8,0,8};}
+  if(variant==2){Stage ignored;ignored.kind=Kind::Offset;ignored.enabled=false;f.stages.insert(f.stages.begin(),ignored);f.terminal=1;}
+  if(variant==3){Stage rotated;rotated.kind=Kind::Rotate;rotated.a=.13f;rotated.b=.21f;rotated.c=-.07f;f.stages.push_back(rotated);f.terminal=2;}
+  check(f.validate(error),"edited pipeline validates");
+  for(int i=0;i<120;++i){Vec p{(i%13-6)*.31f,(i%17-8)*.27f,(i%19-9)*.23f};Sample a=distance(f,p),b=distanceGeneric(f,p);
+   check(a.valid==b.valid&&(!a.valid||(a.distance==b.distance&&a.trap==b.trap)),"specialized pipeline matches generic stage interpreter");
+   a=distanceOnly(f,p);b=distanceGeneric(f,p,false);check(a.valid==b.valid&&(!a.valid||a.distance==b.distance),"specialized geometry-only pipeline matches generic");
+  }
+ }
+ for(int n:{0,6,7,10,12}){s=Scene{};s.formula=preset(n);s.camera=presetCamera(n);s.settings.shadow=12;s.settings.ao=3;Scene generic=s;generic.formula.kernel=0;rays=Rays(s);
+  for(int y=40;y<240;y+=60)for(int x=40;x<400;x+=60){auto a=trace(s,rays,x,y,0),b=trace(generic,rays,x,y,0);check(a.r==b.r&&a.g==b.g&&a.b==b.b,"specialized shaded pixels match generic exactly");}}
  if(argc>1){
   std::string prefix=argv[1];s=Scene{};s.settings.previewBlock=4;s.settings.autoRefine=false;
   for(int n=0;n<PresetCount;++n){s.formula=preset(n);s.camera=presetCamera(n);s.settings.farClip=40;s.settings.convergence=-s.camera.position.z;rays=Rays(s);renderer.invalidate(s,false);

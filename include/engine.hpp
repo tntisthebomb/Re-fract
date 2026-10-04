@@ -46,7 +46,7 @@ struct Formula {
  bool repeat=false;Vec repeatPeriod{16,16,16};
  float derivativeScale=1;
  int terminal=0;float terminalRadius=1;
- std::array<int,MaxStages> active{};int activeCount=0;
+ std::array<int,MaxStages> active{};int activeCount=0,kernel=0;
  bool validate(std::string& error);
 };
 Formula preset(int index);
@@ -55,6 +55,8 @@ constexpr int PresetCount=18;
 struct Sample {float distance=0,trap=0;bool valid=true;};
 Sample distance(const Formula& f,Vec p);
 Sample distanceOnly(const Formula& f,Vec p);
+// Reference path for differential tests and host profiling.
+Sample distanceGeneric(const Formula& f,Vec p,bool trap=true);
 float repeatBoundaryStep(const Formula& f,Vec point,Vec direction);
 struct Settings {
  int steps=64,previewBlock=8,interlace=4,ao=0,shadow=0,samples=1;

@@ -58,11 +58,12 @@ int main(){
  if(!new3ds){scene.settings.previewBlock=16;scene.settings.budgetMs=5;}
  renderer.invalidate(scene,false);
  uint64_t previous=osGetTime(),nextRepeat=0;u32 lastDirection=0;
+ bool changed=false,menuDirty=true;int menuTab=-1;uint64_t nextMenuRefresh=0;std::vector<Field> fields;
  while(aptMainLoop()){
   uint64_t now=osGetTime();float dt=clamp(float(now-previous)*.001f,.001f,.05f);previous=now;
   hidScanInput();u32 down=hidKeysDown(),held=hidKeysHeld();
   if(down&KEY_START)break;
-  bool changed=false;
+  changed=false;
   if(down&KEY_SELECT){tab=(tab+1)%6;selected=0;}
   if(down&KEY_Y){scene.settings.quality=!scene.settings.quality;changed=true;status=scene.settings.quality?"QUALITY: FULL RES / SLOW":"LIVE PREVIEW";}
   if(down&KEY_B){scene.camera=presetIndex>=0?presetCamera(presetIndex):Camera{};changed=true;status="CAMERA RESET";}
@@ -75,7 +76,7 @@ int main(){
   bool motion=forward||strafe||yaw||pitch||vertical;
   if(motion){
    // Camera motion exits expensive still mode immediately.
-   scene.settings.quality=false;
+   if(scene.settings.quality){scene.settings.quality=false;changed=true;}
    scene.camera.yaw+=yaw*dt*1.3f;
    if(scene.camera.yaw>3.14159265f)scene.camera.yaw-=6.2831853f;
    if(scene.camera.yaw< -3.14159265f)scene.camera.yaw+=6.2831853f;
@@ -86,7 +87,8 @@ int main(){
    scene.camera.position.y=clamp(scene.camera.position.y,-10000,10000);
    scene.camera.position.z=clamp(scene.camera.position.z,-10000,10000);
   }
-  std::vector<Field> fields;
+  if(menuDirty||changed||menuTab!=tab||(motion&&tab==4)||(tab==5&&now>=nextMenuRefresh)){
+  fields.clear();menuDirty=false;menuTab=tab;nextMenuRefresh=now+250;
   auto action=[&](std::string label,std::string value,std::function<void()> fn){fields.push_back({{label,value},{},fn});};
   auto real=[&](std::string label,float& v,float step,float lo,float hi){
    fields.push_back({{label,number(v)},[&,step,lo,hi](int d){v=clamp(v+d*step,lo,hi);changed=true;},
@@ -180,10 +182,12 @@ int main(){
    });
    action("QUALITY RENDER","A START",[&](){scene.settings.quality=true;changed=true;status="QUALITY RENDER STARTED";});
    action("RENDER AGAIN","A RESTART",[&](){changed=true;});
+   action("UI FRAME / TRACE MS",number(renderer.measuredFrameMs())+" / "+number(workMs),[](){});
    action("RAYS / DE QUERIES",std::to_string(renderer.profile().rays)+" / "+std::to_string(renderer.profile().distanceQueries),[](){});
    action("REUSED / BATCHES",std::to_string(renderer.profile().reused)+" / "+std::to_string(renderer.profile().batches),[](){});
    action("RESET COUNTERS","A RESET",[&](){renderer.resetProfile();});
    action("CONTROLS","A HELP",[&](){status="PAD MOVE C-STICK LOOK ZL/ZR UP/DOWN";});
+  }
   }
   selected=std::max(0,std::min(selected,int(fields.size())-1));
   u32 direction=held&(KEY_DUP|KEY_DDOWN|KEY_DLEFT|KEY_DRIGHT);
@@ -200,7 +204,7 @@ int main(){
     if(row<int(fields.size())){selected=row;if(touch.px<45)repeat|=KEY_DLEFT;else if(touch.px>280)repeat|=KEY_DRIGHT;else activate=true;}
    }
   }
-  if((repeat&(KEY_DLEFT|KEY_DRIGHT))||activate)before.reset(new Scene(scene));
+  if((repeat&(KEY_DLEFT|KEY_DRIGHT))||activate){before.reset(new Scene(scene));menuDirty=true;}
   if((repeat&KEY_DLEFT)&&fields[selected].adjust)fields[selected].adjust(-1);
   if((repeat&KEY_DRIGHT)&&fields[selected].adjust)fields[selected].adjust(1);
   if(activate&&fields[selected].activate)fields[selected].activate();

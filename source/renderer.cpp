@@ -49,14 +49,15 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  Vec n=(v1*query(p+v1*e,true).distance+v2*query(p+v2*e,true).distance+
         v3*query(p+v3*e,true).distance+v4*query(p+v4*e,true).distance).unit();
  float diffuse=std::fmax(0.f,n.dot(rays.light)),ao=1,shadow=1;
- for(int i=1;i<=o.ao;++i){float h=e*6*i;Sample d=query(p+n*h,true);ao-=std::fmax(0.f,h-d.distance)/h*(.35f/i);}
- if(o.shadow){float st=e*8;Vec start=p+n*(e*4);
+ float baseSpec=o.specular>0?std::pow(std::fmax(0.f,n.dot((rays.light-dir).unit())),24)*o.specular:0;
+ for(int i=1;i<=o.ao&&ao>.15f;++i){float h=e*6*i;Sample d=query(p+n*h,true);ao-=std::fmax(0.f,h-d.distance)/h*(.35f/i);}
+ if(o.shadow&&(diffuse>0||baseSpec>0)){float st=e*8;Vec start=p+n*(e*4);
   for(int i=0;i<o.shadow&&st<8;++i){Sample d=query(start+rays.light*st,true);
    if(!d.valid||d.distance<e){shadow=.15f;break;}
    shadow=std::fmin(shadow,12*d.distance/st);st+=std::fmax(d.distance*o.safety,e);
   }
  }
- float spec=std::pow(std::fmax(0.f,n.dot((rays.light-dir).unit())),24)*o.specular*shadow;
+ float spec=baseSpec*shadow;
  Vec color=gradientColor(o,trap)*(clamp(ao,.15f,1)*(.22f+.78f*diffuse*clamp(shadow,.15f,1)))+Vec{spec,spec,spec};
  float fog=std::exp(-t*o.fog);color=(color*fog+background*(1-fog))*o.exposure;
  return finish(quantize(color));
