@@ -61,10 +61,23 @@ For corridor experiments, load CORRIDOR BOX and adjust the **Scale + C** scale, 
 
 ## Hardware checklist
 
+Additional presets 18–23:
+
+| Preset | Operation chain |
+| --- | --- |
+| MANDELBULB / 4 | Bulb power 4, scale 1 plus C, 10 iterations |
+| MANDELBULB / 5 | Bulb power 5, scale 1 plus C, 10 iterations |
+| ABSOLUTE BULB | Absolute, bulb power 3, scale 1 plus C, 10 iterations |
+| ROTATED NEGATIVE BOX | Rotate (0.08, 0.12, 0.03), box fold 1, sphere radii 0.5/1, scale −1.5 plus C |
+| TWISTED JULIA BULB | Rotate (0.03, 0.1, 0.05), bulb power 8, scale 1 plus Julia constant (0.25, −0.15, 0.1), 10 iterations |
+| MENGER / WIDE CUT | Menger scale 3, XY offset 1, Z offset 0.7, box terminal, 6 iterations |
+
 1. Launch a successful Actions build on New 3DS and confirm the top render and bottom menu appear.
 2. Move with the Circle Pad and release it; confirm the preview eventually refines to `1X`.
 3. Raise/lower the slider, test left/right depth and adjust convergence to a comfortable value.
-4. Check whether status reports two CPU eyes or single-CPU fallback. Compare render time with Parallel Eyes on/off.
+4. Check whether status reports two CPU batches or single-CPU fallback. Compare render time with PARALLEL BATCHES on/off.
 5. Edit a numeric value and an expression through the system keyboard, then return to rendering.
 6. Save a scene, reload it, and export a finished stereo pair; inspect files on the SD card.
 7. Try every preset and high-quality mode. Record sustained render times and behavior after sleep/resume.
+8. Enable GPU SURFACE CACHE, finish a single-sample stationary render and capture it. Confirm geometry, orientation, depth testing, slider-at-2D behavior, independent stereo views, bottom UI and CPU resume. Check repeated switching and low-memory fallback. Holes/disocclusion and baked lighting are expected limitations.
+9. Compare ALGEBRAIC BULB EXP on/off in live previews. Confirm quality mode uses the original math. Record GPU DRAW MS and UI FRAME / TRACE MS separately; these do not measure complete-fractal FPS.

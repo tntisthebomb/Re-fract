@@ -23,9 +23,10 @@ struct Instruction {Op op;float value=0;int variable=0;};
 // Dual values carry partial derivatives w.r.t. x,y,z,cx,cy,cz.
 struct Dual {float value=0;std::array<float,6> d{};};
 struct Expression {
- std::array<Instruction,MaxCode> code{};int count=0,stack=0;
+ std::array<Instruction,MaxCode> code{};int count=0,stack=0,native=0;
  bool compile(const std::string& text,std::string& error);
  bool evaluate(Vec z,Vec c,Dual& result)const;
+ bool evaluateGeneric(Vec z,Vec c,Dual& result)const;
 };
 enum class Kind {BoxFold,SphereFold,Bulb,Scale,Rotate,Offset,Absolute,Sort,Menger,Tetra,Expression,Count};
 const char* kindName(Kind k);
@@ -43,6 +44,7 @@ struct Stage {
 struct Formula {
  std::vector<Stage> stages;int iterations=10;float bailout=8;
  bool logarithmic=false,julia=false;Vec constant{0,0,0};
+ bool algebraicBulb=false;
  bool repeat=false;Vec repeatPeriod{16,16,16};
  float derivativeScale=1;
  int terminal=0;float terminalRadius=1;
@@ -51,10 +53,10 @@ struct Formula {
 };
 Formula preset(int index);
 const char* presetName(int index);
-constexpr int PresetCount=18;
+constexpr int PresetCount=24;
 struct Sample {float distance=0,trap=0;bool valid=true;};
-Sample distance(const Formula& f,Vec p);
-Sample distanceOnly(const Formula& f,Vec p);
+Sample distance(const Formula& f,Vec p,bool exact=false);
+Sample distanceOnly(const Formula& f,Vec p,bool exact=false);
 // Reference path for differential tests and host profiling.
 Sample distanceGeneric(const Formula& f,Vec p,bool trap=true);
 float repeatBoundaryStep(const Formula& f,Vec point,Vec direction);
@@ -72,6 +74,9 @@ struct Settings {
  bool customGradient=false,gradientRepeat=false;
  Vec gradientLow{.18f,.06f,.025f},gradientHigh{.95f,.58f,.22f};
  float gradientScale=.8f,gradientOffset=0;
+ bool gpuCache=false;
+ int meshStride=4;
+ float meshEdge=.08f,meshNear=.005f;
 };
 struct Camera {Vec position{0,0,-4};float yaw=0,pitch=0,speed=1;bool surfaceSpeed=true;float surfaceRange=1,minimumSpeed=.01f;};
 Camera presetCamera(int index);
@@ -89,6 +94,14 @@ struct Rays {
  bool project(const Scene& s,Vec point,float eye,float& x,float& y,float& depth)const;
 };
 struct Color {uint8_t r=0,g=0,b=0;};
+using LoopBody=void (*)(int,void*);
+using ParallelFor=void (*)(int,LoopBody,void*,void*);
+struct SurfaceVertex {Vec position,color;};
+// Vertex positions are relative to origin to protect GPU float24 precision.
+struct SurfaceMesh {Vec origin;std::vector<SurfaceVertex> vertices;std::vector<uint16_t> indices;};
+// CPU-testable projection with the quarter-turn/depth range required by PICA.
+std::array<float,16> meshProjection(const Scene& scene,float eye,Vec relativeOrigin={});
+SurfaceMesh surfaceMesh(const Scene& scene,const std::vector<Color>& colors,const std::vector<float>& depths,int block,float eye,ParallelFor loop=nullptr,void* context=nullptr);
 Color trace(const Scene& s,const Rays& rays,float x,float y,float eye);
 Color shadeCell(const Scene& s,const Rays& rays,int x,int y,int block,float eye,int count);
 struct Profile {
@@ -116,14 +129,17 @@ class Renderer {
  int block=8,lane=0,index=0;bool moving=false,done=false;
  uint64_t rayCount=0,revision=1;
  BatchShader batchShader=nullptr;void* shaderContext=nullptr;
+ ParallelFor parallelFor=nullptr;void* loopContext=nullptr;
  void reproject(const Scene& s,const Rays& rays,float slider);
  bool skipCell(const Scene& s,int x,int y,int eye,int cell);
  public:
  Renderer();
  void setBatchShader(BatchShader shader,void* context){batchShader=shader;shaderContext=context;}
+ void setParallelFor(ParallelFor loop,void* context){parallelFor=loop;loopContext=context;}
  void invalidate(const Scene& s,bool motion,bool clearHistory=true);
  void beginFrame(const Scene& s,bool motion,bool changed,float slider);
  bool recolor(const Scene& s);
+ bool captureSurface(const Scene& s,SurfaceMesh& mesh)const;
  void endFrame(const Scene& s,float totalMs,float renderMs,uint64_t jobs);
  // A bounded batch can be split between cores in mono and stereo modes.
  void step(const Scene& s,const Rays& rays,float slider);

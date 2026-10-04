@@ -77,9 +77,30 @@ bool Expression::compile(const std::string& text,std::string& error){
   }
   nodes[top++]={begin,constant};
  }
+ // Match bytecode, not spelling: whitespace and folded constants work too.
+ const char* polynomials[]={"x*x-y*y-z*z+cx","2*x*y+cy","2*x*z+cz"};
+ for(int k=0;k<3;++k){std::string polynomial=polynomials[k];Parser canonical{polynomial};canonical.sum();bool same=folded.count==canonical.out.count;
+  for(int i=0;same&&i<folded.count;++i){const auto& a=folded.code[i];const auto& b=canonical.out.code[i];same=a.op==b.op&&a.value==b.value&&a.variable==b.variable;}
+  if(same){folded.native=k+1;break;}
+ }
  folded.stack=max;*this=folded;error.clear();return true;
 }
 bool Expression::evaluate(Vec z,Vec c,Dual& result)const{
+ if(!native)return evaluateGeneric(z,c,result);
+ // Preserve the interpreter's intermediate overflow/domain checks and operation order.
+ Dual out;
+ if(native==1){float xx=z.x*z.x,yy=z.y*z.y,zz=z.z*z.z,xy=xx-yy,xyz=xy-zz;
+  if(!std::isfinite(xx)||!std::isfinite(yy)||!std::isfinite(zz)||!std::isfinite(xy)||!std::isfinite(xyz))return false;
+  out.value=xyz+c.x;out.d={{z.x+z.x,-(z.y+z.y),-(z.z+z.z),1,0,0}};
+ }else{float twice=2*z.x,other=native==2?z.y:z.z,product=twice*other;
+  if(!std::isfinite(twice)||!std::isfinite(product))return false;
+  out.value=product+(native==2?c.y:c.z);out.d[0]=other*2;out.d[native-1]=twice;out.d[native+2]=1;
+ }
+ if(!std::isfinite(out.value))return false;
+ for(float derivative:out.d)if(!std::isfinite(derivative))return false;
+ result=out;return true;
+}
+bool Expression::evaluateGeneric(Vec z,Vec c,Dual& result)const{
  if(count<=0)return false;
  Dual stackValues[32];int n=0;float vars[]={z.x,z.y,z.z,c.x,c.y,c.z};
  for(int i=0;i<count;++i){const Instruction& ins=code[i];Op op=ins.op;

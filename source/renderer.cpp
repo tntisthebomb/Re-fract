@@ -25,14 +25,17 @@ Color recolorSample(const Settings& o,const ShadeRecord& r){
 }
 static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,float eye,bool fast){
  RenderResult result;result.profile.rays=1;
- auto query=[&](Vec p,bool shading=false){++result.profile.distanceQueries;if(shading)++result.profile.shadingQueries;return distanceOnly(s.formula,p);};
- auto finish=[&](Color c){result.color=c;return result;};
+ // Per-ray counts fit in 32 bits; publish 64-bit totals once, avoiding paired
+ // loads/stores on ARM11 for every distance-estimator call.
+ uint32_t queries=0,shadingQueries=0,stepsTaken=0;
+ auto query=[&](Vec p,bool shading=false){++queries;if(shading)++shadingQueries;return distanceOnly(s.formula,p,s.settings.quality);};
+ auto finish=[&](Color c){result.color=c;result.profile.distanceQueries=queries;result.profile.shadingQueries=shadingQueries;result.profile.steps=stepsTaken;return result;};
  Vec origin,dir;rays.ray(s,x,y,eye,origin,dir);
  float t=0,trap=0;bool hit=false;const Settings& o=s.settings;
  float previousT=0,previousD=0,advance=0;bool relaxed=false;
  int steps=o.quality?std::min(512,o.steps*2):o.steps;
  for(int i=0;i<steps&&t<o.farClip;++i){
-  ++result.profile.steps;Sample d=query(origin+dir*t);
+  ++stepsTaken;Sample d=query(origin+dir*t);
   if(!d.valid)return finish({180,20,90});
   if(relaxed&&previousD+d.distance<advance){t=previousT+std::fmax(previousD*o.safety,o.epsilon*.25f);d=query(origin+dir*t);++result.profile.relaxFallbacks;if(!d.valid)return finish({180,20,90});relaxed=false;}
   float eps=o.epsilon*(o.quality?.5f:1.f)*std::fmax(1.f,t*.2f);
@@ -46,7 +49,7 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  Vec background{.025f,.028f,.024f};
  if(!hit)return finish(quantize(background+Vec{.018f,.012f,.006f}*(1-y/H)));
  Vec p=origin+dir*t;result.hit=true;result.point=p;result.depth=t;
- ++result.profile.distanceQueries;++result.profile.shadingQueries;trap=distance(s.formula,p).trap;
+ ++queries;++shadingQueries;trap=distance(s.formula,p,o.quality).trap;
  if(fast){float fog=std::exp(-t*o.fog);return finish(quantize((gradientColor(o,trap)*fog+background*(1-fog))*o.exposure));}
  float e=std::fmax(o.epsilon,t*o.epsilon*.25f);
  // Tetrahedral normal: four DE evaluations instead of six central differences.
@@ -152,8 +155,26 @@ void Renderer::beginFrame(const Scene& s,bool motion,bool changed,float slider){
 }
 bool Renderer::recolor(const Scene& s){
  if(!cacheReady||!done||moving)return false;
- for(int e=0;e<activeEyes;++e)for(int k=0;k<W*H;++k)if(shades[e][k].valid)pixels[e][k]=recolorSample(s.settings,shades[e][k]);
+ // The final pass shades one ray per block; avoid repeating exp/gradient math
+ // for every replicated pixel in a completed coarse render.
+ struct Work{Renderer* renderer;const Scene* scene;int rows;};Work work{this,&s,(H+block-1)/block};
+ auto row=[](int i,void* context){auto& work=*static_cast<Work*>(context);auto& self=*work.renderer;
+  int e=i/work.rows,y=(i%work.rows)*self.block;
+  for(int x=0;x<W;x+=self.block){const auto& record=self.shades[e][y*W+x];if(!record.valid)continue;
+   Color color=recolorSample(work.scene->settings,record);
+   for(int yy=y;yy<std::min(y+self.block,H);++yy)std::fill(self.pixels[e].begin()+yy*W+x,self.pixels[e].begin()+yy*W+std::min(x+self.block,W),color);
+  }
+ };
+ int rows=activeEyes*work.rows;
+ if(parallelFor&&s.settings.parallel&&block<=4)parallelFor(rows,row,&work,loopContext);
+ else for(int i=0;i<rows;++i)row(i,&work);
  historyCount=historyCursor=0;++revision;return true;
+}
+bool Renderer::captureSurface(const Scene& s,SurfaceMesh& mesh)const{
+ if(!s.settings.gpuCache||!cacheReady||!done||moving||block>s.settings.meshStride)return false;
+ SurfaceMesh next=surfaceMesh(s,pixels[0],depths[0],block,activeEyes==2?-eyeOffset:0,parallelFor,loopContext);
+ if(next.indices.empty())return false;
+ mesh=std::move(next);return true;
 }
 void Renderer::endFrame(const Scene& s,float totalMs,float renderMs,uint64_t jobs){
  frameMs=totalMs;if(jobs){float cost=renderMs/jobs;averageJobMs=averageJobMs==0?cost:averageJobMs*.8f+cost*.2f;}
@@ -192,7 +213,13 @@ void Renderer::step(const Scene& s,const Rays& rays,float slider){
  if(batchShader&&o.parallel&&count>1)batchShader(s,rays,jobs,results,count,shaderContext);else renderJobs(s,rays,jobs,results,count);
  ++totals.batches;++revision;
  for(int i=0;i<count;++i){const auto& j=jobs[i];const auto& r=results[i];totals.add(r.profile);rayCount+=r.profile.rays;
-  for(int yy=j.y;yy<std::min(j.y+j.block,H);++yy)for(int xx=j.x;xx<std::min(j.x+j.block,W);++xx){int k=yy*W+xx;pixels[j.eye][k]=r.color;depths[j.eye][k]=r.depth;ages[j.eye][k]=0;if(!moving)shades[j.eye][k]=r.shade;}
+  for(int yy=j.y;yy<std::min(j.y+j.block,H);++yy){int first=yy*W+j.x,last=yy*W+std::min(j.x+j.block,W);
+   std::fill(pixels[j.eye].begin()+first,pixels[j.eye].begin()+last,r.color);
+   if(o.temporal||o.adaptiveTiles||o.gpuCache)std::fill(depths[j.eye].begin()+first,depths[j.eye].begin()+last,r.depth);
+   if(o.temporal)std::fill(ages[j.eye].begin()+first,ages[j.eye].begin()+last,0);
+  }
+  // Only final-pass block anchors are read by the material cache.
+  if(!moving)shades[j.eye][j.y*W+j.x]=r.shade;
   if(r.hit&&o.temporal){history[historyCursor]={r.point,r.color,r.depth*rays.tangent*j.block/H,frame,j.eye};historyCursor=(historyCursor+1)%history.size();historyCount=std::min(history.size(),historyCount+1);}
  }
 }

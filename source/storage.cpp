@@ -16,6 +16,7 @@ bool settingsValid(const Scene& s){
  range(s.camera.position.x,-10000,10000)&&range(s.camera.position.y,-10000,10000)&&range(s.camera.position.z,-10000,10000)&&
  v.batchSize>=1&&v.batchSize<=32&&v.targetFps>=15&&v.targetFps<=60&&v.historyFrames>=1&&v.historyFrames<=30&&v.refreshRate>=1&&v.refreshRate<=8&&
  range(v.relaxation,1,1.5f)&&range(v.gradientScale,.01f,100)&&range(v.gradientOffset,-100,100)&&
+ (v.meshStride==4||v.meshStride==8||v.meshStride==16)&&range(v.meshEdge,.005f,.5f)&&range(v.meshNear,.0001f,.5f)&&
  range(v.gradientLow.x,0,1)&&range(v.gradientLow.y,0,1)&&range(v.gradientLow.z,0,1)&&range(v.gradientHigh.x,0,1)&&range(v.gradientHigh.y,0,1)&&range(v.gradientHigh.z,0,1)&&
  range(s.camera.surfaceRange,.001f,20)&&range(s.camera.minimumSpeed,.0001f,1)&&range(s.camera.yaw,-6.3f,6.3f)&&range(s.camera.pitch,-1.5f,1.5f)&&range(s.camera.speed,.01f,10);
 }
@@ -23,7 +24,7 @@ bool settingsValid(const Scene& s){
 bool saveScene(const Scene& s,const std::string& path,std::string& error){
  Scene checked=s;if(!checked.formula.validate(error)||!settingsValid(s)){if(error.empty())error="Invalid scene settings";return false;}
  std::ofstream out(path+".tmp");if(!out){error="Cannot write scene";return false;}
- out<<std::setprecision(9)<<"REFRACT 3\n";
+ out<<std::setprecision(9)<<"REFRACT 4\n";
  const Formula& f=s.formula;const Settings& v=s.settings;const Camera& c=s.camera;
  out<<f.iterations<<' '<<f.bailout<<' '<<f.logarithmic<<' '<<f.julia<<' '<<f.constant.x<<' '<<f.constant.y<<' '<<f.constant.z<<' '<<f.derivativeScale<<' '<<f.terminal<<' '<<f.terminalRadius<<'\n';
  out<<f.repeat<<' '<<f.repeatPeriod.x<<' '<<f.repeatPeriod.y<<' '<<f.repeatPeriod.z<<'\n';
@@ -37,6 +38,7 @@ bool saveScene(const Scene& s,const std::string& path,std::string& error){
  out<<c.surfaceSpeed<<' '<<c.surfaceRange<<' '<<c.minimumSpeed<<'\n';
  out<<f.stages.size()<<'\n';
  for(const Stage& a:f.stages){out<<int(a.kind)<<' '<<a.enabled<<' '<<a.a<<' '<<a.b<<' '<<a.c<<'\n';for(const auto& text:a.text)out<<std::quoted(text)<<'\n';}
+ out<<"GPU "<<v.gpuCache<<' '<<v.meshStride<<' '<<v.meshEdge<<' '<<v.meshNear<<' '<<f.algebraicBulb<<'\n';
  out.close();if(!out){error="Scene write failed";std::remove((path+".tmp").c_str());return false;}
  if(std::rename((path+".tmp").c_str(),path.c_str())!=0){error="Cannot replace scene";return false;}
  error="SCENE SAVED";return true;
@@ -45,7 +47,7 @@ bool loadScene(Scene& s,const std::string& path,std::string& error){
  std::ifstream in(path,std::ios::binary);if(!in){error="Scene slot is empty";return false;}
  in.seekg(0,std::ios::end);auto size=in.tellg();if(size<0||size>16384){error="Scene file too large";return false;}in.seekg(0);
  Scene next;std::string magic;int version=0;in>>magic>>version;
- if(magic!="REFRACT"||(version<1||version>3)){error="Unsupported scene format";return false;}
+ if(magic!="REFRACT"||(version<1||version>4)){error="Unsupported scene format";return false;}
  Formula& f=next.formula;Settings& v=next.settings;Camera& c=next.camera;
  in>>f.iterations>>f.bailout>>f.logarithmic>>f.julia>>f.constant.x>>f.constant.y>>f.constant.z>>f.derivativeScale>>f.terminal>>f.terminalRadius;
  if(version>=3)in>>f.repeat>>f.repeatPeriod.x>>f.repeatPeriod.y>>f.repeatPeriod.z;
@@ -62,6 +64,7 @@ bool loadScene(Scene& s,const std::string& path,std::string& error){
   for(auto& text:a.text)in>>std::quoted(text);
   f.stages.push_back(a);
  }
+ if(version>=4){std::string extension;in>>extension>>v.gpuCache>>v.meshStride>>v.meshEdge>>v.meshNear>>f.algebraicBulb;if(extension!="GPU"){error="Missing GPU settings";return false;}}
  if(!in){error="Truncated or malformed scene";return false;}in>>std::ws;if(!in.eof()){error="Unexpected trailing data";return false;}
  if(!settingsValid(next)){error="Settings outside supported range";return false;}
  if(!f.validate(error))return false;
@@ -71,7 +74,8 @@ bool savePPM(const std::vector<Color>& pixels,const std::string& path,std::strin
  if(pixels.size()!=W*H){error="Invalid image size";return false;}
  std::ofstream out(path,std::ios::binary);if(!out){error="Cannot write image";return false;}
  out<<"P6\n"<<W<<' '<<H<<"\n255\n";
- for(Color c:pixels){char rgb[]={char(c.r),char(c.g),char(c.b)};out.write(rgb,3);}
+ static_assert(sizeof(Color)==3,"PPM export needs packed RGB bytes");
+ out.write(reinterpret_cast<const char*>(pixels.data()),pixels.size()*sizeof(Color));
  out.close();if(!out){error="Image write failed";return false;}error="IMAGE SAVED";return true;
 }
 }

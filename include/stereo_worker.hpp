@@ -8,10 +8,11 @@ class StereoWorker {
  Thread thread=nullptr;LightEvent request,finished;
  std::atomic<bool> stop{false},pending{false},ready{false};
  BatchQueue queue;
+ LoopQueue loop;bool loopWork=false;
  static void run(void* arg){auto& w=*static_cast<StereoWorker*>(arg);
   for(;;){LightEvent_Wait(&w.request);if(w.stop.load(std::memory_order_acquire))break;
    if(!w.pending.exchange(false,std::memory_order_acquire))continue;
-   w.queue.consume();
+   if(w.loopWork)w.loop.consume();else w.queue.consume();
    w.ready.store(true,std::memory_order_release);LightEvent_Signal(&w.finished);
   }
  }
@@ -21,10 +22,18 @@ class StereoWorker {
  void shutdown(){if(thread){stop.store(true,std::memory_order_release);LightEvent_Signal(&request);threadJoin(thread,U64_MAX);threadFree(thread);thread=nullptr;}}
  ~StereoWorker(){shutdown();}
  static void shade(const Scene& s,const Rays& r,const RenderJob* jobs,RenderResult* results,int count,void* arg){
-  auto& w=*static_cast<StereoWorker*>(arg);w.queue.reset(s,r,jobs,results,count);
+  auto& w=*static_cast<StereoWorker*>(arg);if(!w.available()){renderJobs(s,r,jobs,results,count);return;}w.loopWork=false;w.queue.reset(s,r,jobs,results,count);
   w.ready.store(false,std::memory_order_relaxed);w.pending.store(true,std::memory_order_release);LightEvent_Signal(&w.request);
   w.queue.consume();LightEvent_Wait(&w.finished);
   // Acquire publishes all results written by the worker before returning.
+  while(!w.ready.load(std::memory_order_acquire)){}
+ }
+ static void parallelFor(int count,LoopBody body,void* context,void* arg){
+  auto& w=*static_cast<StereoWorker*>(arg);
+  if(!w.available()||count<2){for(int i=0;i<count;++i)body(i,context);return;}
+  w.loopWork=true;w.loop.reset(count,body,context);w.ready.store(false,std::memory_order_relaxed);
+  w.pending.store(true,std::memory_order_release);LightEvent_Signal(&w.request);
+  w.loop.consume();LightEvent_Wait(&w.finished);
   while(!w.ready.load(std::memory_order_acquire)){}
  }
 };

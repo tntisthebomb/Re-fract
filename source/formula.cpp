@@ -52,13 +52,14 @@ float radialPower(float r,float p,int n){
 }
 }
 const char* presetName(int n){
- const char* names[]={"MANDELBULB / 8","MANDELBULB / 2","MANDELBULB / 3","MANDELBULB / 6","MANDELBULB / 12","JULIA BULB","MANDELBOX","NEGATIVE BOX","CORRIDOR BOX","SPHERE NETWORK","MENGER SPONGE","TWISTED MENGER","SIERPINSKI TETRA","KALEIDO TETRA","BOX-BULB HYBRID","FOLDED JULIA BOX","EXPRESSION JULIA","INVERTED BOX"};
+ const char* names[]={"MANDELBULB / 8","MANDELBULB / 2","MANDELBULB / 3","MANDELBULB / 6","MANDELBULB / 12","JULIA BULB","MANDELBOX","NEGATIVE BOX","CORRIDOR BOX","SPHERE NETWORK","MENGER SPONGE","TWISTED MENGER","SIERPINSKI TETRA","KALEIDO TETRA","BOX-BULB HYBRID","FOLDED JULIA BOX","EXPRESSION JULIA","INVERTED BOX","MANDELBULB / 4","MANDELBULB / 5","ABSOLUTE BULB","ROTATED NEGATIVE BOX","TWISTED JULIA BULB","MENGER / WIDE CUT"};
  return names[(n%PresetCount+PresetCount)%PresetCount];
 }
 Camera presetCamera(int n){
  Camera c;
  c.position.z=(n>=6&&n<=9)||n==15||n==17?-9.f:n==14?-7.f:-3.f;
  if(n==9){c.position.z=-14;c.position.y=.5f;}
+ if(n==21)c.position.z=-9;
  return c;
 }
 Formula preset(int n){
@@ -82,10 +83,15 @@ Formula preset(int n){
   f.julia=true;f.constant={-.3f,.2f,.1f};f.stages={stage(Kind::Expression)};
   f.stages[0].text={{"x*x-y*y-z*z+cx","2*x*y+cy","2*x*z+cz"}};
   f.logarithmic=true;
+ }else if(n==18||n==19){f.logarithmic=true;f.iterations=10;f.stages={stage(Kind::Bulb,n==18?4:5,1,1),stage(Kind::Scale,1,1)};
+ }else if(n==20){f.logarithmic=true;f.iterations=10;f.stages={stage(Kind::Absolute),stage(Kind::Bulb,3,1,1),stage(Kind::Scale,1,1)};
+ }else if(n==21){f.iterations=14;f.bailout=32;f.stages={stage(Kind::Rotate,.08f,.12f,.03f),stage(Kind::BoxFold,1),stage(Kind::SphereFold,.5f,1),stage(Kind::Scale,-1.5f,1)};
+ }else if(n==22){f.iterations=10;f.logarithmic=true;f.julia=true;f.constant={.25f,-.15f,.1f};f.stages={stage(Kind::Rotate,.03f,.1f,.05f),stage(Kind::Bulb,8,1,1),stage(Kind::Scale,1,1)};
+ }else if(n==23){f.iterations=6;f.bailout=100;f.terminal=1;f.stages={stage(Kind::Menger,3,1,.7f)};
  }
  std::string error;f.validate(error);return f;
 }
-template<bool Trap> Sample evaluateGenericDistance(const Formula& f,Vec p){
+template<bool Trap> Sample evaluateGenericDistance(const Formula& f,Vec p,bool exact=false){
  Vec z=p,c=f.julia?f.constant:p;float dr=1,trap=1e6f,r=0;
  for(int i=0;i<f.iterations;++i){
   if(z.dot(z)>f.bailout*f.bailout)break;
@@ -98,12 +104,19 @@ template<bool Trap> Sample evaluateGenericDistance(const Formula& f,Vec p){
     }
     case Kind::Bulb:{
      r=z.length();if(r<1e-12f){z={};dr=std::fmax(dr,1e-12f);break;}
-     float theta=std::acos(clamp(z.z/r,-1,1))*s.thetaPower,phi=std::atan2(z.y,z.x)*s.phiPower;
      float power=radialPower(r,s.a-1,s.integerPower);
      // Angular multipliers can stretch the transform beyond the standard bulb.
      dr*=power*s.stretch;
-     float nr=power*r,sinTheta=std::sin(theta);
-     z={nr*sinTheta*std::cos(phi),nr*sinTheta*std::sin(phi),nr*std::cos(theta)};break;
+     float nr=power*r;
+     if(f.algebraicBulb&&!exact&&(s.a==2||s.a==4||s.a==8||s.a==16)&&s.b==1&&s.c==1){
+      float radial=std::sqrt(z.x*z.x+z.y*z.y),st=radial/r,ct=z.z/r;
+      float sp=radial>0?z.y/radial:0,cp=radial>0?z.x/radial:1;
+      for(int n=int(s.a);n>1;n>>=1){float ns=2*st*ct,nc=ct*ct-st*st;st=ns;ct=nc;ns=2*sp*cp;nc=cp*cp-sp*sp;sp=ns;cp=nc;}
+      z={nr*st*cp,nr*st*sp,nr*ct};
+     }else{
+      float theta=std::acos(clamp(z.z/r,-1,1))*s.thetaPower,phi=std::atan2(z.y,z.x)*s.phiPower,sinTheta=std::sin(theta);
+      z={nr*sinTheta*std::cos(phi),nr*sinTheta*std::sin(phi),nr*std::cos(theta)};
+     }break;
     }
     case Kind::Scale:z=z*s.a+c*s.b;dr=dr*std::fabs(s.a)+(f.julia?0:std::fabs(s.b));break;
     case Kind::Rotate:{const auto& m=s.rotation;z={m[0]*z.x+m[1]*z.y+m[2]*z.z,m[3]*z.x+m[4]*z.y+m[5]*z.z,m[6]*z.x+m[7]*z.y+m[8]*z.z};break;}
@@ -192,12 +205,12 @@ float repeatBoundaryStep(const Formula& f,Vec point,Vec direction){
  auto axis=[&](float p,float d,float period){if(period<=0||std::fabs(d)<1e-12f)return;float boundary=d>0?period*.5f:-period*.5f;step=std::fmin(step,std::fmax(0.f,(boundary-p)/d));};
  axis(local.x,direction.x,f.repeatPeriod.x);axis(local.y,direction.y,f.repeatPeriod.y);axis(local.z,direction.z,f.repeatPeriod.z);return step;
 }
-template<bool Trap> Sample dispatch(const Formula& f,Vec p){
+template<bool Trap> Sample dispatch(const Formula& f,Vec p,bool exact=false){
  if(f.kernel==1)return evaluateDistance<Trap,1>(f,p);
  if(f.kernel==3)return evaluateDistance<Trap,3>(f,p);
- return evaluateGenericDistance<Trap>(f,p);
+ return evaluateGenericDistance<Trap>(f,p,exact);
 }
-Sample distance(const Formula& f,Vec p){return dispatch<true>(f,repeatPoint(f,p));}
-Sample distanceOnly(const Formula& f,Vec p){return dispatch<false>(f,repeatPoint(f,p));}
-Sample distanceGeneric(const Formula& f,Vec p,bool trap){p=repeatPoint(f,p);return trap?evaluateGenericDistance<true>(f,p):evaluateGenericDistance<false>(f,p);}
+Sample distance(const Formula& f,Vec p,bool exact){return dispatch<true>(f,repeatPoint(f,p),exact);}
+Sample distanceOnly(const Formula& f,Vec p,bool exact){return dispatch<false>(f,repeatPoint(f,p),exact);}
+Sample distanceGeneric(const Formula& f,Vec p,bool trap){p=repeatPoint(f,p);return trap?evaluateGenericDistance<true>(f,p,true):evaluateGenericDistance<false>(f,p,true);}
 }
