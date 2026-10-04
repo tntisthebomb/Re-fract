@@ -171,7 +171,7 @@ all: $(BUILD) $(GFXBUILD) $(DEPSDIR) $(ROMFS_T3XFILES) $(T3XHFILES)
 .PHONY: cia
 cia: all
 	@test -s build/banner/cube.bnr || (echo 'Generate build/banner/cube.bnr first; see README.'; exit 1)
-	$(MAKEROM) -f cia -target t -exefslogo -o $(TARGET).cia -elf $(TARGET).elf -rsf tools/build-cia.rsf -icon $(TARGET).smdh -banner build/banner/cube.bnr -major 0 -minor 1 -micro 0
+	bash tools/package_cia.sh "$(MAKEROM)"
 
 $(BUILD):
 	@mkdir -p $@

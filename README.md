@@ -84,7 +84,7 @@ The supplied eye artwork is used in `icon.png` (48x48 launcher icon) and `assets
 
 GitHub Actions authors the cube with our `tools/build_banner.py`, converts it through a pinned [pycgfx](https://github.com/skyfloogle/pycgfx) checkout, packages the CGFX with [bannertool](https://github.com/Epicpkmn11/bannertool), then creates the CIA with [makerom](https://github.com/3DSGuy/Project_CTR). Converter source is downloaded at build time rather than redistributed in this repository. No Nintendo banner model or audio is included. The `Re-fract-banner` artifact includes the model, animation, banner and manifest for inspection.
 
-To build locally on Linux x86_64 (Python 3.12 and the 3DS toolchain required):
+To build locally on Ubuntu 24.04 x86_64 (Python 3.12 and the 3DS toolchain required; the released makerom needs glibc 2.38 or newer):
 
 ```sh
 python3 -m pip install gltflib==1.0.13 Pillow==11.3.0

@@ -40,23 +40,39 @@ jobs:
           g++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Werror -Iinclude source/expression.cpp source/formula.cpp source/renderer.cpp source/storage.cpp source/ui.cpp tests/core.cpp -o host-build/sanitized
           ./host-build/sanitized
   new3ds:
-    needs: banner
     runs-on: ubuntu-latest
     container: devkitpro/devkitarm:latest
     steps:
       - uses: actions/checkout@v4
       - name: Install 3DS libraries
         run: dkp-pacman -S --needed --noconfirm 3ds-dev
+      - name: Build homebrew
+        run: make -j2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Re-fract-program
+          path: |
+            Re-fract.3dsx
+            Re-fract.smdh
+            Re-fract.elf
+          if-no-files-found: error
+  package:
+    needs: [banner, new3ds, core]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: Re-fract-banner
           path: build/banner/
-      - name: Install CIA packager
-        run: bash tools/install_cia_tools.sh
-      - name: Build homebrew
+      - uses: actions/download-artifact@v4
+        with:
+          name: Re-fract-program
+          path: ./
+      - name: Package CIA on native Linux runtime
         run: |
-          make -j2
-          make cia MAKEROM=.tools/bin/makerom
+          bash tools/install_cia_tools.sh
+          bash tools/package_cia.sh .tools/bin/makerom
       - uses: actions/upload-artifact@v4
         with:
           name: Re-fract-3dsx-and-cia
