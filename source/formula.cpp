@@ -23,6 +23,8 @@ bool Formula::validate(std::string& error){
  !std::isfinite(derivativeScale)||derivativeScale<1||derivativeScale>100||terminal<0||terminal>2||
  !std::isfinite(terminalRadius)||terminalRadius<.01f||terminalRadius>100){error="Invalid formula limits";return false;}
  if(!std::isfinite(constant.x)||!std::isfinite(constant.y)||!std::isfinite(constant.z)){error="Invalid Julia constant";return false;}
+ auto periodValid=[](float v){return std::isfinite(v)&&(v==0||(v>=.01f&&v<=1000));};
+ if(!periodValid(repeatPeriod.x)||!periodValid(repeatPeriod.y)||!periodValid(repeatPeriod.z)){error="Repeat spacing: 0 or 0.01..1000";return false;}
  bool enabled=false;
  for(Stage& s:stages){enabled|=s.enabled;
   if(int(s.kind)<0||s.kind>=Kind::Count||!std::isfinite(s.a)||!std::isfinite(s.b)||!std::isfinite(s.c)||
@@ -136,6 +138,15 @@ template<bool Trap> Sample evaluateDistance(const Formula& f,Vec p){
  d=std::fmax(0.f,d)/f.derivativeScale;
  return {d,Trap?std::sqrt(trap):0.f,std::isfinite(d)};
 }
-Sample distance(const Formula& f,Vec p){return evaluateDistance<true>(f,p);}
-Sample distanceOnly(const Formula& f,Vec p){return evaluateDistance<false>(f,p);}
+namespace {
+Vec repeatPoint(const Formula& f,Vec p){if(!f.repeat)return p;auto wrap=[](float v,float period){return period>0?v-period*std::floor(v/period+.5f):v;};return {wrap(p.x,f.repeatPeriod.x),wrap(p.y,f.repeatPeriod.y),wrap(p.z,f.repeatPeriod.z)};}
+}
+float repeatBoundaryStep(const Formula& f,Vec point,Vec direction){
+ if(!f.repeat)return 1e30f;
+ Vec local=repeatPoint(f,point);float step=1e30f;
+ auto axis=[&](float p,float d,float period){if(period<=0||std::fabs(d)<1e-12f)return;float boundary=d>0?period*.5f:-period*.5f;step=std::fmin(step,std::fmax(0.f,(boundary-p)/d));};
+ axis(local.x,direction.x,f.repeatPeriod.x);axis(local.y,direction.y,f.repeatPeriod.y);axis(local.z,direction.z,f.repeatPeriod.z);return step;
+}
+Sample distance(const Formula& f,Vec p){return evaluateDistance<true>(f,repeatPoint(f,p));}
+Sample distanceOnly(const Formula& f,Vec p){return evaluateDistance<false>(f,repeatPoint(f,p));}
 }

@@ -118,6 +118,7 @@ int main(){
    real("FIELD OF VIEW",v.fov,5,20,100);real("MOVE SPEED",scene.camera.speed,.1f,.01f,10);
    boolean("SURFACE SLOWDOWN",scene.camera.surfaceSpeed);real("SLOWDOWN DISTANCE",scene.camera.surfaceRange,.1f,.001f,20);real("MIN SPEED FRACTION",scene.camera.minimumSpeed,.005f,.0001f,1);
   }else if(tab==2){Formula& f=scene.formula;
+   boolean("WORLD REPEAT",f.repeat);real("REPEAT X SPACING",f.repeatPeriod.x,1,0,1000);real("REPEAT Y SPACING",f.repeatPeriod.y,1,0,1000);real("REPEAT Z SPACING",f.repeatPeriod.z,1,0,1000);
    integer("ITERATIONS",f.iterations,1,1,32);real("BAILOUT",f.bailout,1,2,256);boolean("LOG DISTANCE",f.logarithmic);
    integer("TERMINAL SHAPE",f.terminal,1,0,2);real("TERMINAL RADIUS",f.terminalRadius,.1f,.01f,100);
    real("DERIVATIVE SCALE",f.derivativeScale,.25f,1,100);boolean("JULIA MODE",f.julia);

@@ -5,6 +5,7 @@ A customizable stereoscopic fractal laboratory for New Nintendo 3DS homebrew, wi
 ## Features
 
 - 18 presets across Mandelbulb, Mandelbox, Julia, Menger, Sierpinski and hybrid families. Some entries are parameter variations, not separate mathematical families.
+- Optional infinite periodic world repetition with separate X/Y/Z spacing; zero spacing leaves that axis unwrapped.
 - Up to 12 editable formula stages: folds, spherical power, scaling, rotations, offsets, absolute/sort operations, Menger and tetrahedral transforms, and custom expressions.
 - Separate off-axis left/right cameras with slider-controlled stereo strength and adjustable convergence. Slider zero uses one render for both eyes.
 - 4x/8x/16x coarse previews, interlaced cell scheduling, and progressive refinement to 400x240 per eye. Camera motion refreshes the coarse scan continuously; releasing controls restarts a clean refinement.

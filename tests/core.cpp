@@ -82,8 +82,10 @@ int main(int argc,char** argv){
  check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error),"v2 scene roundtrip");
  check(loaded.settings.temporal&&loaded.settings.batchSize==16&&loaded.settings.customGradient&&near(loaded.settings.gradientLow.x,1)&&near(loaded.camera.minimumSpeed,.023f),"new settings persist");
  // Remove only the three v2 extension lines to obtain a legacy v1 scene.
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(n==0)out<<"REFRACT 1\n";else if(n<4||n>6)out<<line<<'\n';++n;}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(n==0)out<<"REFRACT 1\n";else if(n!=2&&(n<5||n>7))out<<line<<'\n';++n;}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.temporal&&!loaded.settings.customGradient,"legacy v1 file still loads");
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(n==0)out<<"REFRACT 2\n";else if(n!=2)out<<line<<'\n';++n;}}
+ check(loadScene(loaded,"bad.rfs",error)&&!loaded.formula.repeat&&loaded.settings.temporal,"legacy v2 file still loads");
  s=Scene{};rays=Rays(s);
  for(float eye:{-.04f,0.f,.04f})for(float x:{10.f,200.f,390.f}){Vec o,direction;rays.ray(s,x,95,eye,o,direction);float px,py,depth;
  check(rays.project(s,o+direction*3,eye,px,py,depth)&&near(px,x)&&near(py,95)&&near(depth,3),"stereo projection inverse");}
@@ -122,6 +124,12 @@ int main(int argc,char** argv){
  renderJobs(s,rays,queueJobs,serialResults,32);BatchQueue queue;
  for(int repeat=0;repeat<12;++repeat){queue.reset(s,rays,queueJobs,parallelResults,32);std::thread workerThread([&](){queue.consume();});queue.consume();workerThread.join();
   for(int i=0;i<32;++i){const auto& a=serialResults[i];const auto& b=parallelResults[i];check(a.color.r==b.color.r&&a.color.g==b.color.g&&a.color.b==b.color.b&&a.hit==b.hit&&near(a.depth,b.depth,1e-6f)&&a.profile.distanceQueries==b.profile.distanceQueries,"shared queue matches serial ray results");}}
+ Formula repeated=preset(7);repeated.repeat=true;repeated.repeatPeriod={16,0,16};check(repeated.validate(error),"world repetition validates");
+ for(int i=0;i<20;++i){Vec p{(i-10)*.125f,.25f,(i%7)*.25f};auto a=distance(repeated,p),b=distance(repeated,p+Vec{16,0,-32});check(a.valid==b.valid&&near(a.distance,b.distance,1e-5f)&&near(a.trap,b.trap,1e-4f),"periodic geometry and coloring repeat");}
+ check(near(repeatBoundaryStep(repeated,{7,0,0},{1,0,0}),1)&&near(repeatBoundaryStep(repeated,{-7,0,0},{-1,0,0}),1),"marching respects both cell boundaries");
+ check(repeatBoundaryStep(repeated,{0,0,0},{0,1,0})>1e20f,"zero spacing disables one repetition axis");
+ s=Scene{};s.formula=repeated;check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error)&&loaded.formula.repeat&&near(loaded.formula.repeatPeriod.z,16),"world repetition scene roundtrip");
+ repeated.repeatPeriod.x=.001f;check(!repeated.validate(error),"unsafe tiny repetition spacing rejected");
  if(argc>1){
   std::string prefix=argv[1];s=Scene{};s.settings.previewBlock=4;s.settings.autoRefine=false;
   for(int n=0;n<PresetCount;++n){s.formula=preset(n);s.camera=presetCamera(n);s.settings.farClip=40;s.settings.convergence=-s.camera.position.z;rays=Rays(s);renderer.invalidate(s,false);

@@ -17,3 +17,5 @@ Explore the interior with surface slowdown enabled. Camera position and viewing 
 For a rough pale/gold material, enable CUSTOM GRADIENT under **COLOR**, set GRADIENT START to `707B8C`, GRADIENT END to `D8BE8A`, GRADIENT SCALE to 0.8, REPEAT GRADIENT off, and SPECULAR around 0.6. For still rendering try AO SAMPLES 2–3, SHADOW STEPS 16–24, RAY STEPS 128, and HIT EPSILON 0.001, then Y for quality. These settings are expensive; turn AO/shadows off for movement.
 
 The reference has sophisticated illumination and possibly reflections/environment shading. This build has a simple directional light, local AO, shadow approximation, fog and a two-color orbit gradient. Geometry parameters alone cannot reproduce all of its metallic lighting and blue surroundings.
+
+To repeat the whole structure, enable **FORMULA → WORLD REPEAT** and start X/Z SPACING at 16 and Y SPACING at 0. Set all three to 16 for repetition vertically as well. Raising iterations creates finer structure; world repetition creates additional copies. FAR CLIP 60–100 shows more distant copies, with a performance cost.

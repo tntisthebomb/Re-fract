@@ -33,7 +33,9 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
   float eps=o.epsilon*(o.quality?.5f:1.f)*std::fmax(1.f,t*.2f);
   if(d.distance<eps){hit=true;trap=d.trap;break;}
   previousT=t;previousD=d.distance;advance=std::fmax(d.distance*o.safety,eps*.25f);
-  relaxed=!o.quality&&o.relaxation>1; if(relaxed)advance*=o.relaxation;
+  relaxed=!o.quality&&!s.formula.repeat&&o.relaxation>1; if(relaxed)advance*=o.relaxation;
+  // Stop at a periodic-cell boundary before tracing the next cell's geometry.
+  if(s.formula.repeat)advance=std::fmin(advance,repeatBoundaryStep(s.formula,origin+dir*t,dir)+eps*.25f);
   t+=advance;
  }
  Vec background{.025f,.028f,.024f};

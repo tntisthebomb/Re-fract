@@ -23,9 +23,10 @@ bool settingsValid(const Scene& s){
 bool saveScene(const Scene& s,const std::string& path,std::string& error){
  Scene checked=s;if(!checked.formula.validate(error)||!settingsValid(s)){if(error.empty())error="Invalid scene settings";return false;}
  std::ofstream out(path+".tmp");if(!out){error="Cannot write scene";return false;}
- out<<std::setprecision(9)<<"REFRACT 2\n";
+ out<<std::setprecision(9)<<"REFRACT 3\n";
  const Formula& f=s.formula;const Settings& v=s.settings;const Camera& c=s.camera;
  out<<f.iterations<<' '<<f.bailout<<' '<<f.logarithmic<<' '<<f.julia<<' '<<f.constant.x<<' '<<f.constant.y<<' '<<f.constant.z<<' '<<f.derivativeScale<<' '<<f.terminal<<' '<<f.terminalRadius<<'\n';
+ out<<f.repeat<<' '<<f.repeatPeriod.x<<' '<<f.repeatPeriod.y<<' '<<f.repeatPeriod.z<<'\n';
  out<<v.steps<<' '<<v.previewBlock<<' '<<v.interlace<<' '<<v.ao<<' '<<v.shadow<<' '<<v.samples<<' '
  <<v.epsilon<<' '<<v.safety<<' '<<v.farClip<<' '<<v.fov<<' '<<v.eyeSeparation<<' '<<v.convergence<<' '
  <<v.exposure<<' '<<v.fog<<' '<<v.lightYaw<<' '<<v.lightPitch<<' '<<v.palette<<' '<<v.specular<<' '
@@ -44,9 +45,10 @@ bool loadScene(Scene& s,const std::string& path,std::string& error){
  std::ifstream in(path,std::ios::binary);if(!in){error="Scene slot is empty";return false;}
  in.seekg(0,std::ios::end);auto size=in.tellg();if(size<0||size>16384){error="Scene file too large";return false;}in.seekg(0);
  Scene next;std::string magic;int version=0;in>>magic>>version;
- if(magic!="REFRACT"||(version!=1&&version!=2)){error="Unsupported scene format";return false;}
+ if(magic!="REFRACT"||(version<1||version>3)){error="Unsupported scene format";return false;}
  Formula& f=next.formula;Settings& v=next.settings;Camera& c=next.camera;
  in>>f.iterations>>f.bailout>>f.logarithmic>>f.julia>>f.constant.x>>f.constant.y>>f.constant.z>>f.derivativeScale>>f.terminal>>f.terminalRadius;
+ if(version>=3)in>>f.repeat>>f.repeatPeriod.x>>f.repeatPeriod.y>>f.repeatPeriod.z;
  in>>v.steps>>v.previewBlock>>v.interlace>>v.ao>>v.shadow>>v.samples>>v.epsilon>>v.safety>>v.farClip>>v.fov>>v.eyeSeparation>>v.convergence
  >>v.exposure>>v.fog>>v.lightYaw>>v.lightPitch>>v.palette>>v.specular>>v.stereo>>v.quality>>v.autoRefine>>v.parallel>>v.budgetMs;
  in>>c.position.x>>c.position.y>>c.position.z>>c.yaw>>c.pitch>>c.speed;

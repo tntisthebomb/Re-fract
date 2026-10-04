@@ -43,6 +43,7 @@ struct Stage {
 struct Formula {
  std::vector<Stage> stages;int iterations=10;float bailout=8;
  bool logarithmic=false,julia=false;Vec constant{0,0,0};
+ bool repeat=false;Vec repeatPeriod{16,16,16};
  float derivativeScale=1;
  int terminal=0;float terminalRadius=1;
  std::array<int,MaxStages> active{};int activeCount=0;
@@ -54,6 +55,7 @@ constexpr int PresetCount=18;
 struct Sample {float distance=0,trap=0;bool valid=true;};
 Sample distance(const Formula& f,Vec p);
 Sample distanceOnly(const Formula& f,Vec p);
+float repeatBoundaryStep(const Formula& f,Vec point,Vec direction);
 struct Settings {
  int steps=64,previewBlock=8,interlace=4,ao=0,shadow=0,samples=1;
  float epsilon=.002f,safety=.65f,farClip=20,fov=55;
