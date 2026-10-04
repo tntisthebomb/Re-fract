@@ -18,6 +18,11 @@ namespace {
 Color quantize(Vec v){return {uint8_t(clamp(v.x,0,1)*255),uint8_t(clamp(v.y,0,1)*255),uint8_t(clamp(v.z,0,1)*255)};}
 
 }
+Color recolorSample(const Settings& o,const ShadeRecord& r){
+ Vec background{.025f,.028f,.024f};float fog=std::exp(-r.depth*o.fog);
+ Vec color=gradientColor(o,r.trap)*r.lighting+Vec{r.specular,r.specular,r.specular};
+ return quantize((color*fog+background*(1-fog))*o.exposure);
+}
 static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,float eye,bool fast){
  RenderResult result;result.profile.rays=1;
  auto query=[&](Vec p,bool shading=false){++result.profile.distanceQueries;if(shading)++result.profile.shadingQueries;return distanceOnly(s.formula,p);};
@@ -58,6 +63,7 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
   }
  }
  float spec=baseSpec*shadow;
+ result.shade={trap,t,clamp(ao,.15f,1)*(.22f+.78f*diffuse*clamp(shadow,.15f,1)),spec,true};
  Vec color=gradientColor(o,trap)*(clamp(ao,.15f,1)*(.22f+.78f*diffuse*clamp(shadow,.15f,1)))+Vec{spec,spec,spec};
  float fog=std::exp(-t*o.fog);color=(color*fog+background*(1-fog))*o.exposure;
  return finish(quantize(color));
@@ -95,13 +101,14 @@ RenderResult renderJob(const Scene& s,const Rays& rays,const RenderJob& j){
  RenderResult result;int red=0,green=0,blue=0,count=s.settings.quality?s.settings.samples:1;
  for(int i=0;i<count;++i){float jx=count==1?.5f:(i&1)?.75f:.25f,jy=count<=2?.5f:(i&2)?.75f:.25f;
   auto r=sampleRay(s,rays,std::min(W-.5f,j.x+j.block*jx),std::min(H-.5f,j.y+j.block*jy),j.offset,j.fast&&!s.settings.quality);
-  if(i==0){result.point=r.point;result.depth=r.depth;result.hit=r.hit;}
+  if(i==0){result.shade=r.shade;result.point=r.point;result.depth=r.depth;result.hit=r.hit;}
   result.profile.add(r.profile);red+=r.color.r;green+=r.color.g;blue+=r.color.b;
  }
+ if(count!=1)result.shade.valid=false;
  result.color={uint8_t(red/count),uint8_t(green/count),uint8_t(blue/count)};return result;
 }
 void renderJobs(const Scene& s,const Rays& r,const RenderJob* jobs,RenderResult* out,int n){for(int i=0;i<n;++i)out[i]=renderJob(s,r,jobs[i]);}
-Renderer::Renderer(){for(int e=0;e<2;++e){pixels[e].resize(W*H);depths[e].resize(W*H);ages[e].resize(W*H);}}
+Renderer::Renderer(){for(int e=0;e<2;++e){pixels[e].resize(W*H);depths[e].resize(W*H);ages[e].resize(W*H);shades[e].resize(W*H);}}
 Color shadeCell(const Scene& s,const Rays& r,int x,int y,int b,float eye,int count){
  int red=0,green=0,blue=0;for(int i=0;i<count;++i){float jx=count==1?.5f:(i&1)?.75f:.25f,jy=count<=2?.5f:(i&2)?.75f:.25f;
  Color c=trace(s,r,std::min(W-.5f,x+b*jx),std::min(H-.5f,y+b*jy),eye);red+=c.r;green+=c.g;blue+=c.b;}
@@ -113,6 +120,7 @@ bool Rays::project(const Scene& s,Vec p,float eye,float& x,float& y,float& depth
  y=H*.5f*(1-v.dot(up)/z/tangent);depth=v.length();return std::isfinite(x)&&std::isfinite(y)&&x>=0&&x<W&&y>=0&&y<H&&depth<s.settings.farClip;
 }
 void Renderer::invalidate(const Scene& s,bool motion,bool clearHistory){
+ cacheReady=false;
  int next=motion?(s.settings.adaptiveResolution?dynamicBlock:s.settings.previewBlock):(s.settings.quality?1:s.settings.previewBlock);
  if(!(motion&&moving)||next!=block){index=0;lane=0;}
  moving=motion;block=next;done=false;
@@ -142,6 +150,11 @@ void Renderer::beginFrame(const Scene& s,bool motion,bool changed,float slider){
  else if(motion||moving)invalidate(s,motion,false);
  if(motion&&s.settings.temporal&&!s.settings.quality)reproject(s,Rays(s),slider);
 }
+bool Renderer::recolor(const Scene& s){
+ if(!cacheReady||!done||moving)return false;
+ for(int e=0;e<activeEyes;++e)for(int k=0;k<W*H;++k)if(shades[e][k].valid)pixels[e][k]=recolorSample(s.settings,shades[e][k]);
+ historyCount=historyCursor=0;++revision;return true;
+}
 void Renderer::endFrame(const Scene& s,float totalMs,float renderMs,uint64_t jobs){
  frameMs=totalMs;if(jobs){float cost=renderMs/jobs;averageJobMs=averageJobMs==0?cost:averageJobMs*.8f+cost*.2f;}
  batchLimit=std::max(1,std::min(s.settings.batchSize,int(s.settings.budgetMs*.5f/std::max(.001f,averageJobMs))));
@@ -167,7 +180,7 @@ void Renderer::step(const Scene& s,const Rays& rays,float slider){
  RenderJob jobs[32];RenderResult results[32];int count=0,limit=std::min(32,std::max(eyes,std::min(o.batchSize,batchLimit)));
  int nx=(W+block-1)/block,total=nx*((H+block-1)/block),lanes=std::min(o.interlace,total),scan=0;
  while(count+eyes<=limit&&scan++<32){int cell=lane+index*lanes;
-  if(cell>=total){++lane;index=0;if(lane>=lanes){lane=0;if(!moving&&block>1&&o.autoRefine){if(count){lane=lanes-1;index=(total+lanes-1)/lanes;break;}block=std::max(1,block/2);return;}done=true;break;}continue;}
+  if(cell>=total){++lane;index=0;if(lane>=lanes){lane=0;if(!moving&&block>1&&o.autoRefine){if(count){lane=lanes-1;index=(total+lanes-1)/lanes;break;}block=std::max(1,block/2);return;}done=true;cacheReady=!moving&&(!o.quality||o.samples==1)&&!o.adaptiveTiles;break;}continue;}
   int x=cell%nx*block,y=cell/nx*block;++index;int sampleBlock=block;
   if(moving&&o.foveated&&!o.quality){int gx=x/(2*block)*(2*block),gy=y/(2*block)*(2*block);float dx=(gx+block-W*.5f)/(W*.5f),dy=(gy+block-H*.5f)/(H*.5f);
    if(dx*dx+dy*dy>.35f){if(x!=gx||y!=gy){totals.skipped+=eyes;continue;}sampleBlock=block*2;}}
@@ -179,7 +192,7 @@ void Renderer::step(const Scene& s,const Rays& rays,float slider){
  if(batchShader&&o.parallel&&count>1)batchShader(s,rays,jobs,results,count,shaderContext);else renderJobs(s,rays,jobs,results,count);
  ++totals.batches;++revision;
  for(int i=0;i<count;++i){const auto& j=jobs[i];const auto& r=results[i];totals.add(r.profile);rayCount+=r.profile.rays;
-  for(int yy=j.y;yy<std::min(j.y+j.block,H);++yy)for(int xx=j.x;xx<std::min(j.x+j.block,W);++xx){int k=yy*W+xx;pixels[j.eye][k]=r.color;depths[j.eye][k]=r.depth;ages[j.eye][k]=0;}
+  for(int yy=j.y;yy<std::min(j.y+j.block,H);++yy)for(int xx=j.x;xx<std::min(j.x+j.block,W);++xx){int k=yy*W+xx;pixels[j.eye][k]=r.color;depths[j.eye][k]=r.depth;ages[j.eye][k]=0;if(!moving)shades[j.eye][k]=r.shade;}
   if(r.hit&&o.temporal){history[historyCursor]={r.point,r.color,r.depth*rays.tangent*j.block/H,frame,j.eye};historyCursor=(historyCursor+1)%history.size();historyCount=std::min(history.size(),historyCount+1);}
  }
 }

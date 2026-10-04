@@ -96,7 +96,9 @@ struct Profile {
  void add(const Profile& p);
 };
 struct RenderJob {int x=0,y=0,block=1,eye=0;float offset=0;bool fast=false;};
-struct RenderResult {Color color;Vec point;float depth=0;bool hit=false;Profile profile;};
+struct ShadeRecord {float trap=0,depth=0,lighting=0,specular=0;bool valid=false;};
+Color recolorSample(const Settings& settings,const ShadeRecord& record);
+struct RenderResult {ShadeRecord shade;Color color;Vec point;float depth=0;bool hit=false;Profile profile;};
 RenderResult renderJob(const Scene& s,const Rays& rays,const RenderJob& job);
 void renderJobs(const Scene& s,const Rays& rays,const RenderJob* jobs,RenderResult* results,int count);
 using BatchShader=void (*)(const Scene&,const Rays&,const RenderJob*,RenderResult*,int,void*);
@@ -104,6 +106,8 @@ class Renderer {
  std::array<std::vector<Color>,2> pixels;
  std::array<std::vector<float>,2> depths;
  std::array<std::vector<uint8_t>,2> ages;
+ std::array<std::vector<ShadeRecord>,2> shades;
+ bool cacheReady=false;
  struct History {Vec point;Color color;float footprint=0;uint32_t stamp=0;int eye=0;};
  std::array<History,8192> history{};size_t historyCount=0,historyCursor=0;
  uint32_t frame=0;int dynamicBlock=8,batchLimit=8,activeEyes=1;
@@ -119,6 +123,7 @@ class Renderer {
  void setBatchShader(BatchShader shader,void* context){batchShader=shader;shaderContext=context;}
  void invalidate(const Scene& s,bool motion,bool clearHistory=true);
  void beginFrame(const Scene& s,bool motion,bool changed,float slider);
+ bool recolor(const Scene& s);
  void endFrame(const Scene& s,float totalMs,float renderMs,uint64_t jobs);
  // A bounded batch can be split between cores in mono and stereo modes.
  void step(const Scene& s,const Rays& rays,float slider);

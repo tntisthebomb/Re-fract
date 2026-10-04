@@ -217,6 +217,11 @@ int main(){
   bool activeStereo=slider>0;
   if(activeStereo!=displayStereo){topCopies[0].reset();topCopies[1].reset();displayStereo=activeStereo;}
   gfxSet3D(activeStereo);
+  if(changed&&before&&tab==4&&!motion&&now>=sliderUntil&&!sliderChanged){
+   const std::string& label=fields[selected].row.label;
+   bool material=label=="PALETTE"||label=="CUSTOM GRADIENT"||label=="GRADIENT START"||label=="GRADIENT END"||label=="GRADIENT SCALE"||label=="GRADIENT OFFSET"||label=="REPEAT GRADIENT"||label=="EXPOSURE"||label=="FOG DENSITY";
+   if(material&&renderer.recolor(scene)){changed=false;status="COLOR UPDATED / GEOMETRY REUSED";}
+  }
   renderer.beginFrame(scene,motion||now<sliderUntil,changed,slider);
   Rays rays(scene);uint64_t start=osGetTime(),beforeRays=renderer.rays();
   while(!renderer.complete()){

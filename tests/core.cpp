@@ -143,6 +143,15 @@ int main(int argc,char** argv){
  }
  for(int n:{0,6,7,10,12}){s=Scene{};s.formula=preset(n);s.camera=presetCamera(n);s.settings.shadow=12;s.settings.ao=3;Scene generic=s;generic.formula.kernel=0;rays=Rays(s);
   for(int y=40;y<240;y+=60)for(int x=40;x<400;x+=60){auto a=trace(s,rays,x,y,0),b=trace(generic,rays,x,y,0);check(a.r==b.r&&a.g==b.g&&a.b==b.b,"specialized shaded pixels match generic exactly");}}
+ // Material cache must reproduce a fresh shaded ray, including fog and exposure.
+ s=Scene{};s.formula=preset(7);s.camera=presetCamera(7);s.settings.ao=2;s.settings.shadow=8;rays=Rays(s);
+ for(int y=10;y<H;y+=30)for(int x=10;x<W;x+=30){auto r=renderJob(s,rays,{x,y,1,0,0,false});
+  if(r.shade.valid){Scene edited=s;edited.settings.customGradient=true;edited.settings.gradientLow={.1f,.7f,.3f};edited.settings.gradientHigh={.8f,.2f,.9f};edited.settings.gradientRepeat=true;edited.settings.gradientOffset=.3f;edited.settings.exposure=1.7f;edited.settings.fog=.13f;
+   auto a=recolorSample(edited.settings,r.shade),b=renderJob(edited,Rays(edited),{x,y,1,0,0,false}).color;
+   check(a.r==b.r&&a.g==b.g&&a.b==b.b,"cached material matches fresh trace");}}
+ s.settings.previewBlock=16;s.settings.autoRefine=false;renderer.invalidate(s,false);while(!renderer.complete())renderer.step(s,rays,0);
+ auto cacheRays=renderer.rays();s.settings.palette=2;check(renderer.recolor(s)&&renderer.rays()==cacheRays,"completed cache recolors without tracing");
+ renderer.invalidate(s,true);check(!renderer.recolor(s),"moving cache cannot recolor");
  if(argc>1){
   std::string prefix=argv[1];s=Scene{};s.settings.previewBlock=4;s.settings.autoRefine=false;
   for(int n=0;n<PresetCount;++n){s.formula=preset(n);s.camera=presetCamera(n);s.settings.farClip=40;s.settings.convergence=-s.camera.position.z;rays=Rays(s);renderer.invalidate(s,false);
