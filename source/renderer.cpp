@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "distance_field.hpp"
 #include <algorithm>
 
 namespace rf {
@@ -18,9 +19,25 @@ namespace {
 Color quantize(Vec v){return {uint8_t(clamp(v.x,0,1)*255),uint8_t(clamp(v.y,0,1)*255),uint8_t(clamp(v.z,0,1)*255)};}
 
 }
+float hitTolerance(const Settings& o,float t,float tangent){
+ float ceiling=o.epsilon*(o.quality?.5f:1.f)*std::fmax(1.f,t*.2f);
+ if(!o.adaptivePrecision)return ceiling;
+ // World-space footprint of a pixel, bounded to avoid precision below float resolution.
+ return std::fmin(ceiling,std::fmax(o.minEpsilon,2*t*tangent/H*o.pixelTolerance));
+}
+int renderingIterations(const Scene& s,bool moving){
+ if(!s.settings.adaptiveDetail)return s.formula.iterations;
+ if(moving)return std::min(s.formula.iterations,s.settings.previewIterations);
+ Sample proximity=distanceOnly(s.formula,s.camera.position);
+ if(!proximity.valid||proximity.distance>=.25f)return s.formula.iterations;
+ float ratio=.25f/std::fmax(proximity.distance,s.settings.minEpsilon);
+ int extra=std::max(0,int(std::ceil(std::log2(ratio))));
+ return std::min(std::max(s.formula.iterations,s.settings.detailIterations),s.formula.iterations+extra);
+}
 Color recolorSample(const Settings& o,const ShadeRecord& r){
  Vec background{.025f,.028f,.024f};float fog=std::exp(-r.depth*o.fog);
- Vec color=gradientColor(o,r.trap)*r.lighting+Vec{r.specular,r.specular,r.specular};
+ Vec albedo=gradientColor(o,r.trap);
+ Vec color=albedo*r.lighting+albedo.multiply(r.indirect)+Vec{r.specular,r.specular,r.specular};
  return quantize((color*fog+background*(1-fog))*o.exposure);
 }
 static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,float eye,bool fast){
@@ -28,7 +45,8 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  // Per-ray counts fit in 32 bits; publish 64-bit totals once, avoiding paired
  // loads/stores on ARM11 for every distance-estimator call.
  uint32_t queries=0,shadingQueries=0,stepsTaken=0;
- auto query=[&](Vec p,bool shading=false){++queries;if(shading)++shadingQueries;return distanceOnly(s.formula,p,s.settings.quality);};
+ const DistanceField* field=fast&&!s.settings.quality?rays.field:nullptr;
+ auto query=[&](Vec p,bool shading=false){float cached;if(field&&!shading&&field->lookup(p,cached)){++result.profile.reused;return Sample{cached,0,true};}++queries;if(shading)++shadingQueries;return distanceOnly(s.formula,p,s.settings.quality);};
  auto finish=[&](Color c){result.color=c;result.profile.distanceQueries=queries;result.profile.shadingQueries=shadingQueries;result.profile.steps=stepsTaken;return result;};
  Vec origin,dir;rays.ray(s,x,y,eye,origin,dir);
  float t=0,trap=0;bool hit=false;const Settings& o=s.settings;
@@ -38,7 +56,7 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
   ++stepsTaken;Sample d=query(origin+dir*t);
   if(!d.valid)return finish({180,20,90});
   if(relaxed&&previousD+d.distance<advance){t=previousT+std::fmax(previousD*o.safety,o.epsilon*.25f);d=query(origin+dir*t);++result.profile.relaxFallbacks;if(!d.valid)return finish({180,20,90});relaxed=false;}
-  float eps=o.epsilon*(o.quality?.5f:1.f)*std::fmax(1.f,t*.2f);
+  float eps=hitTolerance(o,t,rays.tangent);
   if(d.distance<eps){hit=true;trap=d.trap;break;}
   previousT=t;previousD=d.distance;advance=std::fmax(d.distance*o.safety,eps*.25f);
   relaxed=!o.quality&&!s.formula.repeat&&o.relaxation>1; if(relaxed)advance*=o.relaxation;
@@ -51,7 +69,9 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  Vec p=origin+dir*t;result.hit=true;result.point=p;result.depth=t;
  ++queries;++shadingQueries;trap=distance(s.formula,p,o.quality).trap;
  if(fast){float fog=std::exp(-t*o.fog);return finish(quantize((gradientColor(o,trap)*fog+background*(1-fog))*o.exposure));}
- float e=std::fmax(o.epsilon,t*o.epsilon*.25f);
+ float e=o.adaptivePrecision?hitTolerance(o,t,rays.tangent):std::fmax(o.epsilon,t*o.epsilon*.25f);
+ // At large coordinates, a sub-ULP normal offset would sample the same point.
+ if(o.adaptivePrecision)e=std::fmax(e,4*1.1920929e-7f*std::fmax(1.f,std::fmax(std::fabs(p.x),std::fmax(std::fabs(p.y),std::fabs(p.z)))));
  // Tetrahedral normal: four DE evaluations instead of six central differences.
  Vec v1{1,-1,-1},v2{-1,-1,1},v3{-1,1,-1},v4{1,1,1};
  Vec n=(v1*query(p+v1*e,true).distance+v2*query(p+v2*e,true).distance+
@@ -67,7 +87,35 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  }
  float spec=baseSpec*shadow;
  result.shade={trap,t,clamp(ao,.15f,1)*(.22f+.78f*diffuse*clamp(shadow,.15f,1)),spec,true};
- Vec color=gradientColor(o,trap)*(clamp(ao,.15f,1)*(.22f+.78f*diffuse*clamp(shadow,.15f,1)))+Vec{spec,spec,spec};
+ if(o.giSamples>0&&o.giStrength>0){
+  // Deterministic cosine-weighted hemisphere samples: no recursion, RNG or frame flicker.
+  Vec axis=std::fabs(n.z)<.9f?Vec{0,0,1}:Vec{0,1,0};
+  auto cross=[](Vec a,Vec b){return Vec{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};
+  Vec u=cross(axis,n).unit(),v=cross(n,u);Vec incoming;
+  const float offsets[4][2]={{.35f,.35f},{-.65f,.25f},{.25f,-.65f},{-.45f,-.45f}};
+  for(int j=0;j<o.giSamples;++j){
+   float a=offsets[j][0],b=offsets[j][1];Vec direction=u*a+v*b+n*std::sqrt(1-a*a-b*b);
+   Vec start=p+n*(e*4);float travel=e*4;bool bounced=false,valid=true;
+   for(int k=0;k<o.giSteps&&travel<o.giRange;++k){
+    Vec q=start+direction*travel;Sample d=query(q);if(!d.valid){valid=false;break;}
+    if(d.distance<e){
+     // Approximate one diffuse bounce, with an estimated secondary normal.
+     Vec bn=(v1*query(q+v1*e,true).distance+v2*query(q+v2*e,true).distance+
+              v3*query(q+v3*e,true).distance+v4*query(q+v4*e,true).distance).unit();
+     ++queries;++shadingQueries;Sample material=distance(s.formula,q,o.quality);
+     if(material.valid)incoming=incoming+gradientColor(o,material.trap)*(.15f+.85f*std::fmax(0.f,bn.dot(rays.light)));
+     bounced=true;break;
+    }
+    travel+=std::fmax(d.distance*o.safety,e);
+   }
+   // Exhausted rays are treated as occluded, rather than leaking skylight.
+   if(valid&&!bounced&&travel>=o.giRange)incoming=incoming+o.skyColor*(.5f+.5f*std::fmax(0.f,direction.y));
+  }
+  result.shade.indirect=incoming*(o.giStrength/o.giSamples);
+ }
+ Vec albedo=gradientColor(o,trap);
+ Vec color=albedo*(clamp(ao,.15f,1)*(.22f+.78f*diffuse*clamp(shadow,.15f,1)))+Vec{spec,spec,spec};
+ if(o.giSamples>0&&o.giStrength>0)color=color+albedo.multiply(result.shade.indirect);
  float fog=std::exp(-t*o.fog);color=(color*fog+background*(1-fog))*o.exposure;
  return finish(quantize(color));
 }
@@ -154,7 +202,7 @@ void Renderer::beginFrame(const Scene& s,bool motion,bool changed,float slider){
  if(motion&&s.settings.temporal&&!s.settings.quality)reproject(s,Rays(s),slider);
 }
 bool Renderer::recolor(const Scene& s){
- if(!cacheReady||!done||moving)return false;
+ if(!cacheReady||!done||moving||s.settings.giSamples>0)return false;
  // The final pass shades one ray per block; avoid repeating exp/gradient math
  // for every replicated pixel in a completed coarse render.
  struct Work{Renderer* renderer;const Scene* scene;int rows;};Work work{this,&s,(H+block-1)/block};

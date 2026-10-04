@@ -4,6 +4,8 @@
 #include "stereo_worker.hpp"
 #include "framebuffer.hpp"
 #include "gpu_surface.hpp"
+#include "trace_benchmark.hpp"
+#include "distance_field.hpp"
 #include <functional>
 #include <algorithm>
 #include <cstdio>
@@ -57,7 +59,8 @@ int main(){
  auto sceneOwner=std::make_unique<Scene>();auto rendererOwner=std::make_unique<Renderer>();
  Scene& scene=*sceneOwner;Renderer& renderer=*rendererOwner;Canvas bottom(320,240);
  StereoWorker worker(new3ds);
- GpuSurface gpuSurface;bool meshNavigation=false,captureRequested=false;
+ std::shared_ptr<DistanceField> distanceField;std::unique_ptr<Scene> detailScene;std::unique_ptr<TraceBenchmark> benchmark;bool benchmarkActive=false;
+ GpuSurface gpuSurface;bool meshNavigation=false,captureRequested=false;bool refreshPending=false;
  if(worker.available()){renderer.setBatchShader(StereoWorker::shade,&worker);renderer.setParallelFor(StereoWorker::parallelFor,&worker);}
  int tab=0,selected=0,presetIndex=0,stageIndex=0,slot=0;float slider=0,workMs=0;StereoSlider sliderControl;uint64_t sliderUntil=0;
  std::string status=worker.available()?"NEW 3DS / TWO CPU BATCHES":new3ds?"NEW 3DS / SINGLE CPU FALLBACK":"OLD 3DS / USE 16X PREVIEW";
@@ -111,20 +114,20 @@ int main(){
   auto boolean=[&](std::string label,bool& v){auto fn=[&](){v=!v;changed=true;};fields.push_back({{label,v?"ON":"OFF"},[fn](int){fn();},fn});};
   auto choice=[&](std::string label,int& v,const std::vector<int>& values){fields.push_back({{label,std::to_string(v)},
    [&,values](int dir){auto it=std::find(values.begin(),values.end(),v);int i=it==values.end()?0:int(it-values.begin());i=(i+dir+int(values.size()))%int(values.size());v=values[i];changed=true;},{}});};
-  if(tab==0){for(int i=0;i<PresetCount;++i)action(presetName(i),presetIndex==i?"CURRENT":"A LOAD",[&,i](){scene.formula=preset(i);presetIndex=i;stageIndex=0;scene.camera=presetCamera(i);scene.settings.farClip=40;scene.settings.convergence=-scene.camera.position.z;changed=true;status="PRESET LOADED";});}
+  if(tab==0){for(int i=0;i<PresetCount;++i)action(presetName(i),presetIndex==i?"CURRENT":"A LOAD",[&,i](){scene.formula=preset(i);presetIndex=i;stageIndex=0;scene.camera=presetCamera(i);if(i>=24)scene.settings=presetSettings(i);scene.settings.farClip=40;scene.settings.convergence=-scene.camera.position.z;changed=true;status="PRESET LOADED";});}
   else if(tab==1){Settings& v=scene.settings;
    boolean("QUALITY MODE",v.quality);choice("PREVIEW BLOCK",v.previewBlock,{4,8,16});integer("INTERLACE LANES",v.interlace,1,1,8);
-   integer("RAY STEPS",v.steps,8,8,256);real("HIT EPSILON",v.epsilon,.0005f,.0001f,.05f);real("STEP SAFETY",v.safety,.05f,.05f,1);
-   real("FAR CLIP",v.farClip,1,1,100);real("FRAME BUDGET MS",v.budgetMs,1,1,20);boolean("AUTO REFINE",v.autoRefine);
+   integer("RAY STEPS",v.steps,8,8,256);real("HIT EPSILON",v.epsilon,.0005f,.000001f,.05f);boolean("ZOOM PRECISION EXP",v.adaptivePrecision);real("MIN HIT EPSILON",v.minEpsilon,.000001f,.000001f,.001f);real("PIXEL TOLERANCE",v.pixelTolerance,.05f,.05f,2);real("STEP SAFETY",v.safety,.05f,.05f,1);
+   real("FAR CLIP",v.farClip,1,1,100);real("FRAME BUDGET MS",v.budgetMs,1,1,20);boolean("AUTO REFINE",v.autoRefine);boolean("ADAPT DETAIL EXP",v.adaptiveDetail);integer("MOVE ITERATIONS",v.previewIterations,1,1,32);integer("DETAIL ITERATION CAP",v.detailIterations,1,1,32);
    choice("QUALITY SAMPLES",v.samples,{1,2,4});integer("AO SAMPLES",v.ao,1,0,6);integer("SHADOW STEPS",v.shadow,4,0,64);
    boolean("STEREO",v.stereo);real("EYE SEPARATION",v.eyeSeparation,.005f,0,.2f);real("CONVERGENCE",v.convergence,.2f,.2f,30);
    boolean("PARALLEL BATCHES",v.parallel);
-   boolean("GPU SURFACE CACHE",v.gpuCache);choice("GPU MESH SPACING",v.meshStride,{4,8,16});real("GPU EDGE REJECTION",v.meshEdge,.01f,.005f,.5f);
+   boolean("GPU SURFACE CACHE",v.gpuCache);boolean("GPU AUTO RECAPTURE",v.gpuAutoRefresh);choice("GPU MESH SPACING",v.meshStride,{4,8,16});real("GPU EDGE REJECTION",v.meshEdge,.01f,.005f,.5f);
    real("GPU NEAR CLIP",v.meshNear,.001f,.0001f,.5f);
    action("CAPTURE GPU SURFACE","A AFTER RENDER",[&](){captureRequested=true;});
    action("RESUME CPU RENDER","A TRACE HERE",[&](){gpuSurface.synchronize();meshNavigation=false;changed=true;status="CPU RENDER AT CURRENT CAMERA";topCopies[0].reset();topCopies[1].reset();});
    integer("BATCH SIZE",v.batchSize,1,1,32);boolean("ADAPT RESOLUTION",v.adaptiveResolution);integer("TARGET REFRESH FPS",v.targetFps,5,15,60);
-   boolean("FAST MOVE LIGHTING",v.previewLighting);boolean("TEMPORAL EXPERIMENT",v.temporal);boolean("STEREO REUSE EXP",v.stereoReuse);
+   boolean("FAST MOVE LIGHTING",v.previewLighting);boolean("DISTANCE FIELD EXP",v.distanceField);real("FIELD GRID SPACING",v.fieldSpacing,.05f,.05f,1);boolean("TEMPORAL EXPERIMENT",v.temporal);boolean("STEREO REUSE EXP",v.stereoReuse);
    boolean("ADAPTIVE TILES EXP",v.adaptiveTiles);boolean("FIXED FOVEATION EXP",v.foveated);real("RELAXATION EXP",v.relaxation,.05f,1,1.5f);
    integer("HISTORY FRAMES",v.historyFrames,1,1,30);integer("REFRESH EVERY N",v.refreshRate,1,1,8);
    real("FIELD OF VIEW",v.fov,5,20,100);real("MOVE SPEED",scene.camera.speed,.1f,.01f,10);
@@ -173,12 +176,14 @@ int main(){
    auto colorField=[&](std::string label,Vec& c){char hex[8];std::snprintf(hex,sizeof(hex),"%02X%02X%02X",int(clamp(c.x,0,1)*255+.5f),int(clamp(c.y,0,1)*255+.5f),int(clamp(c.z,0,1)*255+.5f));
     action(label,hex,[&,label](){char initial[8];std::snprintf(initial,sizeof(initial),"%02X%02X%02X",int(c.x*255+.5f),int(c.y*255+.5f),int(c.z*255+.5f));std::string text=initial;
      if(keyboard(label+" HEX RRGGBB",text)){if(text.size()==7&&text[0]=='#')text.erase(0,1);char* end=nullptr;unsigned long value=std::strtoul(text.c_str(),&end,16);
-      if(text.size()==6&&text.find_first_not_of("0123456789abcdefABCDEF")==std::string::npos&&*end=='\0'){c={float((value>>16)&255)/255,float((value>>8)&255)/255,float(value&255)/255};v.customGradient=true;changed=true;}else status="USE SIX HEX DIGITS RRGGBB";}
+      if(text.size()==6&&text.find_first_not_of("0123456789abcdefABCDEF")==std::string::npos&&*end=='\0'){c={float((value>>16)&255)/255,float((value>>8)&255)/255,float(value&255)/255};if(label!="SKY COLOR")v.customGradient=true;changed=true;}else status="USE SIX HEX DIGITS RRGGBB";}
     });
    };
    colorField("GRADIENT START",v.gradientLow);colorField("GRADIENT END",v.gradientHigh);
    real("GRADIENT SCALE",v.gradientScale,.1f,.01f,100);real("GRADIENT OFFSET",v.gradientOffset,.05f,-100,100);boolean("REPEAT GRADIENT",v.gradientRepeat);
    real("LIGHT YAW",v.lightYaw,.1f,-6.3f,6.3f);real("LIGHT PITCH",v.lightPitch,.1f,-1.5f,1.5f);real("EXPOSURE",v.exposure,.1f,.1f,4);
+   integer("INDIRECT SAMPLES",v.giSamples,1,0,4);integer("INDIRECT STEPS",v.giSteps,4,4,64);
+   real("INDIRECT STRENGTH",v.giStrength,.1f,0,2);real("INDIRECT RANGE",v.giRange,.1f,.1f,10);colorField("SKY COLOR",v.skyColor);
    real("SPECULAR",v.specular,.05f,0,1);real("FOG DENSITY",v.fog,.01f,0,1);
    real("CAMERA X",scene.camera.position.x,.1f,-10000,10000);real("CAMERA Y",scene.camera.position.y,.1f,-10000,10000);real("CAMERA Z",scene.camera.position.z,.1f,-10000,10000);
    real("CAMERA YAW",scene.camera.yaw,.1f,-6.3f,6.3f);real("CAMERA PITCH",scene.camera.pitch,.1f,-1.5f,1.5f);
@@ -194,11 +199,17 @@ int main(){
    });
    action("QUALITY RENDER","A START",[&](){scene.settings.quality=true;changed=true;status="QUALITY RENDER STARTED";});
    action("RENDER AGAIN","A RESTART",[&](){changed=true;});
+   action("FIELD CACHE READY",distanceField?std::to_string(int(distanceField->progress()*100))+"%":"OFF",[](){});
+   action("BENCH CURRENT VIEW","A 1500 MONO SAMPLES",[&](){benchmark=std::make_unique<TraceBenchmark>(scene);benchmarkActive=true;status="BENCHMARK RUNNING / FROZEN MONO VIEW";});
+   action("BENCH MOVE PREVIEW","A 1500 MONO SAMPLES",[&](){benchmark=std::make_unique<TraceBenchmark>(scene,distanceField&&distanceField->ready()?distanceField:nullptr,true);benchmarkActive=true;status="BENCHMARK / MOVE PREVIEW SNAPSHOT";});
+   action("BENCH SAMPLES",benchmark?std::to_string(benchmark->completedSamples())+" / 1500":"NOT RUN",[](){});
+   action("BENCH RAYS / SECOND",benchmark?number(benchmark->raysPerSecond()):"NOT RUN",[](){});
+   action("CANCEL BENCHMARK","A CANCEL",[&](){benchmarkActive=false;});
    action("UI FRAME / TRACE MS",number(renderer.measuredFrameMs())+" / "+number(workMs),[](){});
    action("GPU MODE / TRIANGLES",std::string(meshNavigation?"ON / ":"OFF / ")+std::to_string(gpuSurface.triangles()),[](){});
    action("GPU DRAW MS",number(gpuSurface.drawingMs()),[](){});
    action("RAYS / DE QUERIES",std::to_string(renderer.profile().rays)+" / "+std::to_string(renderer.profile().distanceQueries),[](){});
-   action("REUSED / BATCHES",std::to_string(renderer.profile().reused)+" / "+std::to_string(renderer.profile().batches),[](){});
+   action("REUSE EVENTS / BATCHES",std::to_string(renderer.profile().reused)+" / "+std::to_string(renderer.profile().batches),[](){});
    action("RESET COUNTERS","A RESET",[&](){renderer.resetProfile();});
    action("CONTROLS","A HELP",[&](){status="PAD MOVE C-STICK LOOK ZL/ZR UP/DOWN";});
   }
@@ -240,17 +251,46 @@ int main(){
   if(changed&&meshNavigation){gpuSurface.synchronize();meshNavigation=false;topCopies[0].reset();topCopies[1].reset();}
   if(captureRequested){captureRequested=false;SurfaceMesh mesh;
    if(!meshNavigation&&!motion&&renderer.captureSurface(scene,mesh)&&gpuSurface.upload(mesh)){
-    meshNavigation=true;scene.settings.quality=false;status="GPU SURFACE / "+std::to_string(gpuSurface.triangles())+" TRIANGLES";
+    meshNavigation=true;scene.settings.quality=false;refreshPending=false;status="GPU SURFACE / "+std::to_string(gpuSurface.triangles())+" TRIANGLES";
    }else status="ENABLE GPU CACHE / FINISH SINGLE-SAMPLE RENDER";
    menuDirty=true;
   }
-  if(!meshNavigation)renderer.beginFrame(scene,motion||now<sliderUntil,changed,slider);
-  Rays rays(scene);uint64_t start=osGetTime(),beforeRays=renderer.rays(),beforeRevision=renderer.imageRevision();
-  while(!meshNavigation&&!renderer.complete()){
-   renderer.step(scene,rays,slider);
+  Scene* rendering=&scene;
+  if(scene.settings.adaptiveDetail){
+   if(!detailScene||changed)detailScene=std::make_unique<Scene>(scene);
+   detailScene->settings=scene.settings;detailScene->camera=scene.camera;
+   detailScene->formula.iterations=renderingIterations(scene,motion||now<sliderUntil);rendering=detailScene.get();
+  }
+  bool refresh=meshNavigation&&scene.settings.gpuAutoRefresh;
+  if(refresh&&(motion||sliderChanged))refreshPending=true;
+  if(!meshNavigation||refresh)renderer.beginFrame(*rendering,motion||now<sliderUntil,changed,slider);
+  if(scene.settings.distanceField&&!scene.settings.adaptiveDetail&&(!distanceField||changed||!distanceField->containsCamera(scene.camera.position)))distanceField=std::make_shared<DistanceField>(scene);
+  if(!scene.settings.distanceField||scene.settings.adaptiveDetail)distanceField.reset();
+  Rays rays(*rendering);rays.field=scene.settings.adaptiveDetail?nullptr:distanceField.get();uint64_t start=osGetTime(),beforeRays=renderer.rays(),beforeRevision=renderer.imageRevision();
+  if(distanceField&&!distanceField->ready()&&!benchmarkActive&&!meshNavigation){
+   distanceField->build(worker.available()&&scene.settings.parallel?StereoWorker::parallelFor:nullptr,&worker);
+  }
+  while(!benchmarkActive&&(!meshNavigation||refresh)&&!renderer.complete()){
+   renderer.step(*rendering,rays,slider);
    if(float(osGetTime()-start)>=scene.settings.budgetMs)break;
   }
+  if(benchmarkActive){
+   // Hardware tick timing excludes UI, framebuffer transfers and VBlank.
+   uint64_t ticks=svcGetSystemTick();
+   do{benchmark->step(worker.available()?StereoWorker::shade:nullptr,&worker);}
+   while(!benchmark->complete()&&float(osGetTime()-start)<scene.settings.budgetMs);
+   benchmark->recordMs(float((svcGetSystemTick()-ticks)*1000.0/SYSCLOCK_ARM11));
+   if(benchmark->complete()){
+    benchmarkActive=false;bool saved=benchmark->save("sdmc:/3ds/Re-fract/benchmark-"+std::to_string(slot)+".csv");
+    status=saved?"BENCHMARK DONE / CSV SAVED":"BENCHMARK DONE / CSV WRITE FAILED";menuDirty=true;
+   }
+  }
   workMs=float(osGetTime()-start);
+  if(refresh&&refreshPending&&!motion&&renderer.complete()){
+   SurfaceMesh mesh;if(renderer.captureSurface(scene,mesh)&&gpuSurface.upload(mesh)){
+    refreshPending=false;status="GPU CACHE REFRESHED";menuDirty=true;
+   }else{refreshPending=false;status="RECAPTURE NEEDS SINGLE SAMPLE / FINE BLOCK";menuDirty=true;}
+  }
   // Fields are rebuilt next frame; do not dereference captures after a vector edit.
   // A finished, idle scene does not need a UI redraw or bottom-screen transfer.
   if(panelRefresh||menuDirty||changed||down||repeat||motion||now<sliderUntil||workMs!=panelWorkMs||renderer.imageRevision()!=beforeRevision){

@@ -2,6 +2,8 @@
 #include "ui.hpp"
 #include "batch_queue.hpp"
 #include "framebuffer.hpp"
+#include "trace_benchmark.hpp"
+#include "distance_field.hpp"
 #include <limits>
 #include <thread>
 #include <iostream>
@@ -103,9 +105,9 @@ int main(int argc,char** argv){
  check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error),"v2 scene roundtrip");
  check(loaded.settings.temporal&&loaded.settings.batchSize==16&&loaded.settings.customGradient&&near(loaded.settings.gradientLow.x,1)&&near(loaded.camera.minimumSpeed,.023f),"new settings persist");
  // Remove only the three v2 extension lines to obtain a legacy v1 scene.
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0)continue;if(n==0)out<<"REFRACT 1\n";else if(n!=2&&(n<5||n>7))out<<line<<'\n';++n;}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0)continue;if(n==0)out<<"REFRACT 1\n";else if(n!=2&&(n<5||n>7))out<<line<<'\n';++n;}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.temporal&&!loaded.settings.customGradient,"legacy v1 file still loads");
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0)continue;if(n==0)out<<"REFRACT 2\n";else if(n!=2)out<<line<<'\n';++n;}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0)continue;if(n==0)out<<"REFRACT 2\n";else if(n!=2)out<<line<<'\n';++n;}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.formula.repeat&&loaded.settings.temporal,"legacy v2 file still loads");
  s=Scene{};rays=Rays(s);
  for(float eye:{-.04f,0.f,.04f})for(float x:{10.f,200.f,390.f}){Vec o,direction;rays.ray(s,x,95,eye,o,direction);float px,py,depth;
@@ -212,7 +214,7 @@ int main(int argc,char** argv){
  check(avoidsJump,"mesh rejects triangles bridging depth discontinuities");
  check(surfaceMesh(s,{},meshDepths,1,0).indices.empty()&&surfaceMesh(s,meshColors,meshDepths,8,0).indices.empty(),"invalid buffers and too-coarse source reject capture");
  s.settings.meshStride=8;s.settings.meshEdge=.12f;check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error)&&loaded.settings.gpuCache&&loaded.settings.meshStride==8&&near(loaded.settings.meshEdge,.12f),"GPU controls persist in scene v4");
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0)continue;if(line=="REFRACT 4")line="REFRACT 3";out<<line<<'\n';}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0)continue;if(line=="REFRACT 5")line="REFRACT 3";out<<line<<'\n';}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.gpuCache,"legacy v3 defaults to CPU rendering");
  s=Scene{};s.settings.gpuCache=true;s.settings.previewBlock=4;s.settings.autoRefine=false;rays=Rays(s);renderer.invalidate(s,false);
  while(!renderer.complete())renderer.step(s,rays,0);
@@ -226,9 +228,59 @@ int main(int argc,char** argv){
  }
  s=Scene{};s.formula.algebraicBulb=true;s.settings.quality=true;rays=Rays(s);Scene exactBulb=s;exactBulb.formula.algebraicBulb=false;
  for(int y=40;y<H;y+=60)for(int x=40;x<W;x+=60){auto a=trace(s,rays,x,y,0),b=trace(exactBulb,rays,x,y,0);check(a.r==b.r&&a.g==b.g&&a.b==b.b,"quality render retains exact bulb math with experiment enabled");}
+ {Scene cacheScene;cacheScene.camera.position={0,0,-4};cacheScene.settings.fieldSpacing=.25f;
+  auto grid=std::make_shared<DistanceField>(cacheScene);float estimate=0;
+  check(!grid->lookup({0,0,-4},estimate),"incomplete distance field bypasses approximate lookups");
+  while(!grid->ready())grid->build();
+  check(grid->lookup({0,0,-4},estimate)&&estimate>0,"completed field caches open space");
+  check(!grid->lookup({0,0,0},estimate)&&!grid->lookup({100,0,0},estimate),"field rejects near geometry and out-of-domain points");
+  check(!grid->lookup({std::numeric_limits<float>::quiet_NaN(),0,0},estimate),"distance field rejects nonfinite lookup coordinates");
+  check(grid->containsCamera({0,0,-4})&&!grid->containsCamera({100,0,0}),"camera movement bounds grid reuse");
+  TraceBenchmark cachedPreview(cacheScene,grid,true),exactPreview(cacheScene,{},true);
+  while(!cachedPreview.complete()){cachedPreview.step();exactPreview.step();}
+  check(cachedPreview.profile().reused>0&&cachedPreview.profile().distanceQueries<exactPreview.profile().distanceQueries,"open-space field preview replaces formula evaluations");
+  Rays cacheRays(cacheScene);cacheRays.field=grid.get();cacheScene.settings.quality=true;
+  auto cached=renderJob(cacheScene,cacheRays,{200,120,1,0,0,true});cacheRays.field=nullptr;auto exact=renderJob(cacheScene,cacheRays,{200,120,1,0,0,true});
+  check(cached.color.r==exact.color.r&&cached.color.g==exact.color.g&&cached.color.b==exact.color.b&&cached.depth==exact.depth,"quality render bypasses approximate field");
+ }
+ // Zoom precision retains the legacy ceiling and shrinks with pixel footprint.
+ s=Scene{};float legacyTolerance=hitTolerance(s.settings,.01f,.5f);
+ check(near(legacyTolerance,.002f,1e-8f),"legacy near-hit tolerance unchanged");
+ s.settings.adaptivePrecision=true;
+ check(hitTolerance(s.settings,.01f,.5f)<legacyTolerance*.01f,"zoom precision resolves finer near-surface detail");
+ check(hitTolerance(s.settings,0,.5f)==s.settings.minEpsilon,"zoom precision has a finite floor");
+ check(hitTolerance(s.settings,100,.5f)<=.040001f,"zoom precision respects legacy distant ceiling");
+ s.settings.adaptiveDetail=true;s.camera.position={0,0,0};
+ check(renderingIterations(s,true)==8&&renderingIterations(s,false)==24,"adaptive detail reduces moving work and increases close detail");
+ check(s.formula.iterations==9,"adaptive detail preserves editable formula iteration count");
+ s.settings.detailIterations=3;check(renderingIterations(s,false)>=9,"detail cap never reduces stationary base iterations");
+ s=Scene{};rays=Rays(s);RenderJob bounceJob{200,120,1,0,0,false};
+ auto unlit=renderJob(s,rays,bounceJob);check(unlit.hit,"indirect-light reference ray hits geometry");
+ s.settings.giSamples=4;s.settings.giSteps=32;s.settings.giRange=.5f;
+ auto indirect=renderJob(s,rays,bounceJob),repeatIndirect=renderJob(s,rays,bounceJob);
+ check(indirect.depth==unlit.depth&&indirect.profile.distanceQueries>unlit.profile.distanceQueries,"indirect lighting preserves geometry and records secondary work");
+ check(indirect.color.r==repeatIndirect.color.r&&indirect.color.g==repeatIndirect.color.g&&indirect.color.b==repeatIndirect.color.b,"indirect sampling deterministic across frames");
+ auto cachedIndirect=recolorSample(s.settings,indirect.shade);
+ check(cachedIndirect.r==indirect.color.r&&cachedIndirect.g==indirect.color.g&&cachedIndirect.b==indirect.color.b,"shade cache stores indirect RGB contribution");
+ s.settings.giStrength=0;auto disabledIndirect=renderJob(s,rays,bounceJob);
+ check(disabledIndirect.profile.distanceQueries==unlit.profile.distanceQueries&&disabledIndirect.color.r==unlit.color.r&&disabledIndirect.color.g==unlit.color.g&&disabledIndirect.color.b==unlit.color.b,"zero indirect strength bypasses extra queries");
+ s.settings.giStrength=.7f;s.settings.adaptivePrecision=true;s.settings.gpuAutoRefresh=true;s.settings.adaptiveDetail=true;
+ s.settings.distanceField=true;s.settings.fieldSpacing=.4f;s.settings.minEpsilon=.000002f;s.settings.skyColor={.2f,.3f,.4f};
+ check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error)&&loaded.settings.distanceField&&near(loaded.settings.fieldSpacing,.4f)&&loaded.settings.adaptivePrecision&&loaded.settings.adaptiveDetail&&loaded.settings.gpuAutoRefresh&&loaded.settings.giSamples==4&&near(loaded.settings.skyColor.z,.4f),"v5 precision, indirect and refresh settings roundtrip");
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("LIGHT ",0)==0)continue;if(line=="REFRACT 5")line="REFRACT 4";out<<line<<'\n';}}
+ check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.adaptivePrecision&&loaded.settings.giSamples==0,"legacy v4 uses original precision and no indirect lighting");
+ s.settings.giSamples=5;check(!saveScene(s,"bad.rfs",error),"reject excessive secondary samples");
+ s.settings.giSamples=0;s.settings.minEpsilon=0;check(!saveScene(s,"bad.rfs",error),"reject zero precision floor");
+ s=Scene{};TraceBenchmark serialBench(s),parallelBench(s);
+ auto parallelBenchmark=[](const Scene& s,const Rays& rays,const RenderJob* jobs,RenderResult* results,int count,void*){BatchQueue q;q.reset(s,rays,jobs,results,count);std::thread thread([&](){q.consume();});q.consume();thread.join();};
+ while(!serialBench.complete()){serialBench.step();parallelBench.step(parallelBenchmark);}
+ check(serialBench.digest()==parallelBench.digest()&&serialBench.profile().distanceQueries==parallelBench.profile().distanceQueries,"frozen-view benchmark serial and parallel digests match");
+ check(serialBench.completedSamples()==1500&&serialBench.profile().rays==1500&&serialBench.raysPerSecond()==0,"benchmark workload bounded and zero elapsed safe");
+ serialBench.recordMs(100);check(near(serialBench.raysPerSecond(),15000,.01f),"benchmark rate measures traced rays per active second");
+ for(int n=24;n<PresetCount;++n){Scene corridor;corridor.formula=preset(n);corridor.camera=presetCamera(n);corridor.settings=presetSettings(n);check(saveScene(corridor,"test.rfs",error),"new preset appearance and camera save within supported range");}
  if(argc>1){
   std::string prefix=argv[1];s=Scene{};s.settings.previewBlock=4;s.settings.autoRefine=false;
-  for(int n=0;n<PresetCount;++n){s.formula=preset(n);s.camera=presetCamera(n);s.settings.farClip=40;s.settings.convergence=-s.camera.position.z;rays=Rays(s);renderer.invalidate(s,false);
+  for(int n=0;n<PresetCount;++n){s.settings=presetSettings(n);s.settings.previewBlock=4;s.settings.autoRefine=false;s.formula=preset(n);s.camera=presetCamera(n);s.settings.farClip=40;s.settings.convergence=-s.camera.position.z;rays=Rays(s);renderer.invalidate(s,false);
    auto start=std::chrono::steady_clock::now();while(!renderer.complete())renderer.step(s,rays,1);
    check(savePPM(renderer.image(0),prefix+"-"+std::to_string(n)+".ppm",error),"render export");
    auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-start).count();

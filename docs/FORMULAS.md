@@ -81,3 +81,22 @@ Additional presets 18–23:
 7. Try every preset and high-quality mode. Record sustained render times and behavior after sleep/resume.
 8. Enable GPU SURFACE CACHE, finish a single-sample stationary render and capture it. Confirm geometry, orientation, depth testing, slider-at-2D behavior, independent stereo views, bottom UI and CPU resume. Check repeated switching and low-memory fallback. Holes/disocclusion and baked lighting are expected limitations.
 9. Compare ALGEBRAIC BULB EXP on/off in live previews. Confirm quality mode uses the original math. Record GPU DRAW MS and UI FRAME / TRACE MS separately; these do not measure complete-fractal FPS.
+
+## Additional corridor presets (24–35, zero-based)
+
+| Preset | Editable construction |
+| --- | --- |
+| Ruby Chambers | Negative box scale −1.5, radii 0.5/1, 14 iterations, repeated every 12 units |
+| Blue Sphere Vault | Negative box scale −1.8, radii 0.32/1, repeated every 12 |
+| Gold Box Corridor | Box scale 2.8, radii 0.5/1, repeated every 12 |
+| Menger Colonnade | Menger scale 3, 7 iterations, repeated every 3.2 |
+| Twisted Box Hall | Rotate (0.03, 0.08, 0.02), box scale 2, repeated every 12 |
+| Inverted Bubble Hall | Negative box scale −1.8, radii 0.12/1, repeated every 12 |
+| Tetra Gallery | Tetra fold, scale 2, offset (−1,−1,−1), repeated every 5 |
+| Julia Bulb Arcade | Bulb 8, Julia (0.25,−0.15,0.1), repeated every 3.5 |
+| Bulb Garden | Bulb 8, 12 iterations, repeated every 3.5 |
+| Absolute Bulb / 5 | Absolute fold, bulb 5, 12 iterations |
+| Box-Bulb / 4 | Box fold 1, bulb 4, 10 iterations |
+| Negative Box / Deep | Negative box −1.5, 20 iterations, closer starting camera |
+
+Periodic cells are finite copies of the selected formula, not an analytically generated corridor or recovered source image. All stage values, repeat spacings, camera and gradients remain editable.

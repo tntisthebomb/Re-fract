@@ -120,3 +120,41 @@ Implementation follows devkitPro's [GPU triangle example](https://github.com/dev
 The [host benchmark](benchmark-algebraic-bulb.csv) alternates the two modes over ten measured repetitions after two warmups, taking medians for 1,500 shaded rays per preset. Sampled Mandelbulb 8/2 and Julia Bulb traces take approximately 51–61% less desktop time. Mandelbulb 8 differs at 3 of 1,500 pixels by at most one channel value; the other two sampled images match. These measurements do not establish New 3DS gains or bounds on arbitrary zooms. Repeated iteration and finite-difference shading can amplify floating-point differences. The experiment is off by default.
 
 Six additional presets bring the browser to 24 entries. Their editable operation chains are documented in FORMULAS.md. PPM exports now write the packed RGB image in one buffered operation rather than one call per pixel.
+
+## Corridor, lighting and preview experiments
+
+### Zoom precision and detail
+
+ZOOM PRECISION EXP bounds hit tolerance by the world-space pixel footprint (`2*t*tan(FOV/2)/240 * PIXEL TOLERANCE`), with MIN HIT EPSILON as a lower bound and the original tolerance as a ceiling. It also shrinks normal-sampling offsets; those offsets remain large enough to represent coordinate changes in float. Defaults retain the original path. The editable HIT EPSILON lower limit is now 1e-6. Smaller tolerances can require many more march steps or reveal missed rays; this is a detail control, not a guaranteed speedup.
+
+ADAPT DETAIL EXP uses at most MOVE ITERATIONS during movement. At rest, camera proximity adds one iteration per approximate halving below 0.25 world units, up to DETAIL ITERATION CAP (never below the base formula iterations). It leaves the saved formula iteration count unchanged. Camera proximity is only a heuristic: a distant target viewed with narrow FOV does not automatically receive extra iterations. Changing iterations changes geometry, so motion/stationary transitions can pop. It remains off by default and is incompatible with the distance cache, which is automatically bypassed.
+
+### Sampled indirect lighting
+
+COLOR → INDIRECT SAMPLES (0–4) controls a deterministic hemisphere sampling approximation. Secondary rays use INDIRECT STEPS (4–64) and INDIRECT RANGE (0.1–10). A secondary hit contributes its orbit-gradient color under approximate direct diffuse lighting; an unobstructed ray reaching the range limit contributes SKY COLOR. Exhausted or invalid rays contribute no light. INDIRECT STRENGTH scales the average contribution. The implementation has no recursion, stochastic temporal noise or further bounces. It omits secondary shadow testing, physical BRDF normalization, reflections and light transport beyond the finite range. It is an artistic one-bounce approximation, not an unbiased path tracer or full global illumination.
+
+Indirect tracing preserves the primary geometry and records secondary distance queries. Fast moving lighting skips it. Quality antialiasing samples repeat the lighting calculation. RGB indirect illumination is retained in shade records and baked into GPU captures. Material recoloring restarts tracing when indirect samples are enabled, because the cached bounce colors would otherwise become stale. Samples default to zero; start with one, 16 steps, strength 0.5 and range 2. More samples usually cost more time.
+
+### Experimental 3D distance cache
+
+DISTANCE FIELD EXP builds a 33³ grid (35,937 distances, about 140 KiB) centered on the camera. FIELD GRID SPACING sets its sample spacing and extent. Four independent rows are built per UI frame, sharing the existing worker. The cache is only used once fully built; exact rendering continues while it warms. Formula/settings edits or moving out of its central region rebuild it. Adaptive iteration changes bypass it.
+
+Only fast moving previews use the grid. A query far from a sampled surface uses the nearest stored estimate minus sample offset; queries within two grid spacings of sampled geometry, outside the grid or with invalid samples use the formula. All stationary, quality, coloring and normal queries retain formula evaluation. Arbitrary fractal distance estimators do not guarantee the Lipschitz behavior assumed by this approximation. Thin features, seams and overestimated distances can produce incorrect moving previews. The final stationary image does not use the approximation. This is not an occupancy proof or a volumetric mesh.
+
+FILES shows cache progress. BENCH MOVE PREVIEW retains a completed cache snapshot when available; BENCH CURRENT VIEW bypasses it. Both freeze the scene, evaluate 1,500 mono sample positions in bounded batches, use the persistent worker when enabled and time active work with hardware ticks. QUALITY SAMPLES can produce more than 1,500 rays. CSV includes tracing time, rays/second, distance queries, checksum and major settings. Benchmark timing excludes UI, VBlank, image transfers and cache construction; it is not complete-scene FPS. CSV uses the selected scene slot and is replaced by the next benchmark for that slot. A benchmark pauses CPU image tracing and can be canceled from FILES.
+
+The host experiment benchmark is in `tests/experiment_benchmark.cpp`; build its CMake target and run it to regenerate `benchmark-experiments.csv`. It takes five measured repetitions after one warmup for each grouped mode, so small timing differences are noisy. Cache construction is timed separately. Cached-preview changed-pixel counts and maximum channel differences are recorded; changed checksums are expected and must not be treated as lossless gains. Construction cost must be amortized across reused views. These desktop samples do not establish console speedups.
+
+### GPU automatic recapture
+
+Enable GPU AUTO RECAPTURE before capturing a completed single-sample view. While navigating, the GPU displays the finite old surface and the CPU renders the current view within the frame budget. Once movement stops and the new view finishes, a fresh mesh replaces the old one. This is full-view recapture, not selective hole filling, merging of multiple captures or concurrent independent CPU threads beyond the existing worker. Holes and baked lighting remain visible until replacement. More CPU work can lower navigation responsiveness. Shaders, targets and fixed-capacity vertex/index buffers are now reused between captures; GPU work is synchronized before buffer overwrites. Failure falls back to CPU display.
+
+### Hardware checks and remaining research
+
+Portable regression checks, serial/parallel benchmark agreement, exact-path image comparisons, ASan/UBSan and cross-compilation cover the new code. Test on New 3DS: cache warmup and recentering, moving cache artifacts, near-surface precision/detail transitions, indirect sample costs, repeated stereo GPU recaptures, edits during navigation, benchmark cancel/save, and sleep/resume. GPU execution remains unverified here. Scenes save as v5 and read v1–v4; older apps cannot read v5.
+
+Vertex-shader ray marching, adaptive volumetric mesh extraction, predictive rendering, mathematically certified spatial bounds and self-similar geometry reuse remain research proposals. They were not added as nonfunctional options. They need dedicated formula/backend designs and hardware validation, and have no established benefit on this device. ARM11 still lacks NEON; this pass does not claim SIMD acceleration.
+
+In the recorded cache samples, 0–513 of 1,500 moving-preview pixels changed, with maximum channel difference up to 69/255. Some scene timings were effectively unchanged. Keep this experiment off if those artifacts outweigh its modest potential benefit.
+
+The reuse counter combines historical-ray reuse with distance-cache query hits; those are different units. Use the dedicated CSV query counts when comparing the distance-field experiment.

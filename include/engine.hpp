@@ -14,6 +14,7 @@ struct Vec {
  Vec operator+(Vec b)const{return {x+b.x,y+b.y,z+b.z};}
  Vec operator-(Vec b)const{return {x-b.x,y-b.y,z-b.z};}
  Vec operator*(float s)const{return {x*s,y*s,z*s};}
+ Vec multiply(Vec b)const{return {x*b.x,y*b.y,z*b.z};}
  float dot(Vec b)const{return x*b.x+y*b.y+z*b.z;}
  float length()const{return std::sqrt(dot(*this));}
  Vec unit()const{float n=length();return n>1e-12f?*this*(1/n):Vec{0,0,1};}
@@ -53,7 +54,7 @@ struct Formula {
 };
 Formula preset(int index);
 const char* presetName(int index);
-constexpr int PresetCount=24;
+constexpr int PresetCount=36;
 struct Sample {float distance=0,trap=0;bool valid=true;};
 Sample distance(const Formula& f,Vec p,bool exact=false);
 Sample distanceOnly(const Formula& f,Vec p,bool exact=false);
@@ -77,18 +78,32 @@ struct Settings {
  bool gpuCache=false;
  int meshStride=4;
  float meshEdge=.08f,meshNear=.005f;
+ bool adaptivePrecision=false,gpuAutoRefresh=false;
+ bool adaptiveDetail=false;
+ bool distanceField=false;
+ float fieldSpacing=.25f;
+ int previewIterations=8,detailIterations=24;
+ float minEpsilon=.000001f,pixelTolerance=.25f;
+ int giSamples=0,giSteps=16;
+ float giStrength=.5f,giRange=2;
+ Vec skyColor{.15f,.2f,.3f};
 };
 struct Camera {Vec position{0,0,-4};float yaw=0,pitch=0,speed=1;bool surfaceSpeed=true;float surfaceRange=1,minimumSpeed=.01f;};
 Camera presetCamera(int index);
 struct Scene {Formula formula=preset(0);Settings settings;Camera camera;};
+Settings presetSettings(int index);
+float hitTolerance(const Settings& settings,float distance,float tangent);
+int renderingIterations(const Scene& scene,bool moving);
 float cameraSpeedScale(const Scene& s);
 Vec gradientColor(const Settings& s,float trap);
 struct StereoSlider {
  float strength=0;bool active=false;
  bool update(const Settings& settings,float raw);
 };
+class DistanceField;
 struct Rays {
  Vec forward,right,up,light;float tangent=1;
+ const DistanceField* field=nullptr;
  explicit Rays(const Scene& s);
  void ray(const Scene& s,float x,float y,float eye,Vec& origin,Vec& direction)const;
  bool project(const Scene& s,Vec point,float eye,float& x,float& y,float& depth)const;
@@ -109,7 +124,7 @@ struct Profile {
  void add(const Profile& p);
 };
 struct RenderJob {int x=0,y=0,block=1,eye=0;float offset=0;bool fast=false;};
-struct ShadeRecord {float trap=0,depth=0,lighting=0,specular=0;bool valid=false;};
+struct ShadeRecord {float trap=0,depth=0,lighting=0,specular=0;bool valid=false;Vec indirect{};};
 Color recolorSample(const Settings& settings,const ShadeRecord& record);
 struct RenderResult {ShadeRecord shade;Color color;Vec point;float depth=0;bool hit=false;Profile profile;};
 RenderResult renderJob(const Scene& s,const Rays& rays,const RenderJob& job);

@@ -4,7 +4,7 @@ A customizable stereoscopic fractal laboratory for New Nintendo 3DS homebrew, wi
 
 ## Features
 
-- 24 presets across Mandelbulb, Mandelbox, Julia, Menger, Sierpinski and hybrid families. Some entries are parameter variations, not separate mathematical families.
+- 36 presets across Mandelbulb, Mandelbox, Julia, Menger, Sierpinski and hybrid families. Some entries are parameter variations, not separate mathematical families.
 - Optional infinite periodic world repetition with separate X/Y/Z spacing; zero spacing leaves that axis unwrapped.
 - Up to 12 editable formula stages: folds, spherical power, scaling, rotations, offsets, absolute/sort operations, Menger and tetrahedral transforms, and custom expressions.
 - Separate off-axis left/right cameras with slider-controlled stereo strength and adjustable convergence. Slider zero uses one render for both eyes.
@@ -13,7 +13,10 @@ A customizable stereoscopic fractal laboratory for New Nintendo 3DS homebrew, wi
 - Configurable iterations, bailout, distance estimator, derivative scale, step safety, ray steps, lighting, ambient occlusion, shadows, palettes, fog, exposure, camera and stereo geometry.
 - New 3DS high-speed request and optional CPU 2 worker. Both CPUs claim jobs from a shared queue in mono and stereo modes, with automatic serial fallback. Batch size adapts to measured work cost.
 - Completed single-sample images support trace-free gradient edits, with parallel recoloring at fine resolution and one color evaluation per coarse block. Polynomial expression Julia formulas have direct derivative kernels; edited formulas retain the general interpreter.
-- Optional GPU surface-cache navigation: capture a completed traced view, then use PICA200 triangles/depth testing and independent stereo projections to move without retracing. Hidden geometry is absent; lighting/colors are baked. Resume CPU rendering to refresh the cache.
+- Zoom-aware hit precision and optional motion/detail iteration limits; an experimental open-space distance cache for moving previews.
+- Optional one-bounce indirect lighting with sky color and bounded secondary tracing.
+- On-console frozen-view benchmarks with CSV exports and separate moving-preview tests.
+- Optional GPU surface-cache navigation: capture a completed traced view, then use PICA200 triangles/depth testing and independent stereo projections to move without retracing. Hidden geometry is absent; lighting/colors are baked. Resume CPU rendering to refresh the cache, or enable automatic recapture after movement stops.
 - Optional algebraic Mandelbulb math for powers 2/4/8/16 with standard angular multipliers. Quality mode retains the original trigonometric path.
 - Eight SD scene slots and PPM stereo-pair export. Saved scenes include custom expressions and all settings.
 
@@ -113,3 +116,15 @@ make cia MAKEROM=.tools/bin/makerom
 The model's dimensions fit the HOME Menu banner camera, and the generator checks the 512 KiB CGFX size limit. The actual HOME Menu appearance and looping playback still need console validation. No additional flat banner image is needed. The in-app UI texture remains procedural.
 
 The project currently has no assigned license. Choose one before distributing code under a specific license.
+
+## Corridor and lighting pass
+
+The twelve new presets include Ruby Chambers, Blue Sphere Vault, Gold Box Corridor, Menger Colonnade, Twisted Box Hall, Inverted Bubble Hall, Tetra Gallery, Julia Bulb Arcade, Bulb Garden, Absolute Bulb / 5, Box-Bulb / 4 and Negative Box / Deep. They provide starting camera positions and color/render settings. The corridor presets use editable periodic worlds; they approximate the attached styles rather than reconstructing the original formulas or materials. Loading a new preset applies its settings, including turning indirect lighting off.
+
+For close-ups, enable **ZOOM PRECISION EXP**; try **MIN HIT EPSILON 0.000001** and **PIXEL TOLERANCE 0.25**. **ADAPT DETAIL EXP** optionally reduces moving iterations and adds stationary detail near the camera. These controls can increase rendering cost and change the surface; they are not an unlimited deep-zoom solution.
+
+Under COLOR, **INDIRECT SAMPLES 1** enables a bounded diffuse-bounce/skylight approximation. Start with **INDIRECT STEPS 16**, **INDIRECT STRENGTH 0.5**, **INDIRECT RANGE 2**. Set samples to zero to disable it. Four samples are slower; quality samples multiply this work. Fast moving lighting skips indirect tracing.
+
+Under FILES, run **BENCH CURRENT VIEW** or **BENCH MOVE PREVIEW**. Each evaluates a frozen 1,500-position mono grid, honors the selected quality/sample settings, and writes `sdmc:/3ds/Re-fract/benchmark-N.csv` for the selected scene slot. The benchmark pauses normal CPU rendering. It reports active tracing throughput, not displayed FPS. Use the moving benchmark with a completed distance cache to compare that experiment.
+
+Scenes now save as format v5 and still load v1–v4. Previous app versions cannot load v5 scenes. See [PERFORMANCE.md](docs/PERFORMANCE.md) for limits and hardware checks.

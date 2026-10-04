@@ -52,7 +52,7 @@ float radialPower(float r,float p,int n){
 }
 }
 const char* presetName(int n){
- const char* names[]={"MANDELBULB / 8","MANDELBULB / 2","MANDELBULB / 3","MANDELBULB / 6","MANDELBULB / 12","JULIA BULB","MANDELBOX","NEGATIVE BOX","CORRIDOR BOX","SPHERE NETWORK","MENGER SPONGE","TWISTED MENGER","SIERPINSKI TETRA","KALEIDO TETRA","BOX-BULB HYBRID","FOLDED JULIA BOX","EXPRESSION JULIA","INVERTED BOX","MANDELBULB / 4","MANDELBULB / 5","ABSOLUTE BULB","ROTATED NEGATIVE BOX","TWISTED JULIA BULB","MENGER / WIDE CUT"};
+ const char* names[]={"MANDELBULB / 8","MANDELBULB / 2","MANDELBULB / 3","MANDELBULB / 6","MANDELBULB / 12","JULIA BULB","MANDELBOX","NEGATIVE BOX","CORRIDOR BOX","SPHERE NETWORK","MENGER SPONGE","TWISTED MENGER","SIERPINSKI TETRA","KALEIDO TETRA","BOX-BULB HYBRID","FOLDED JULIA BOX","EXPRESSION JULIA","INVERTED BOX","MANDELBULB / 4","MANDELBULB / 5","ABSOLUTE BULB","ROTATED NEGATIVE BOX","TWISTED JULIA BULB","MENGER / WIDE CUT","RUBY CHAMBERS","BLUE SPHERE VAULT","GOLD BOX CORRIDOR","MENGER COLONNADE","TWISTED BOX HALL","INVERTED BUBBLE HALL","TETRA GALLERY","JULIA BULB ARCADE","BULB GARDEN","ABSOLUTE BULB / 5","BOX-BULB / 4","NEGATIVE BOX / DEEP"};
  return names[(n%PresetCount+PresetCount)%PresetCount];
 }
 Camera presetCamera(int n){
@@ -60,6 +60,11 @@ Camera presetCamera(int n){
  c.position.z=(n>=6&&n<=9)||n==15||n==17?-9.f:n==14?-7.f:-3.f;
  if(n==9){c.position.z=-14;c.position.y=.5f;}
  if(n==21)c.position.z=-9;
+ if(n>=24&&n<=31){c.position={6,0,-3};c.speed=.35f;}
+ if(n==24||n==25||n==26||n==27||n==29)c.position={0,.6f,-4.5f};
+ if(n==30)c.position={2.5f,0,-3};
+ if(n==31||n==32)c.position={1.75f,.3f,-1.75f};
+ if(n==35)c.position.z=-4.5f;
  return c;
 }
 Formula preset(int n){
@@ -88,8 +93,32 @@ Formula preset(int n){
  }else if(n==21){f.iterations=14;f.bailout=32;f.stages={stage(Kind::Rotate,.08f,.12f,.03f),stage(Kind::BoxFold,1),stage(Kind::SphereFold,.5f,1),stage(Kind::Scale,-1.5f,1)};
  }else if(n==22){f.iterations=10;f.logarithmic=true;f.julia=true;f.constant={.25f,-.15f,.1f};f.stages={stage(Kind::Rotate,.03f,.1f,.05f),stage(Kind::Bulb,8,1,1),stage(Kind::Scale,1,1)};
  }else if(n==23){f.iterations=6;f.bailout=100;f.terminal=1;f.stages={stage(Kind::Menger,3,1,.7f)};
+ }else if(n>=24&&n<=31){
+  f.iterations=14;f.bailout=32;f.repeat=true;f.repeatPeriod={12,12,12};
+  float scale=n==24?-1.5f:n==25?-1.8f:n==26?2.8f:n==29?-1.8f:2;
+  f.stages={stage(Kind::BoxFold,1),stage(Kind::SphereFold,n==25?.32f:n==29?.12f:.5f,1),stage(Kind::Scale,scale,1)};
+  if(n==27){f.iterations=7;f.terminal=1;f.bailout=100;f.repeatPeriod={3.2f,3.2f,3.2f};f.stages={stage(Kind::Menger,3,1,1)};}
+  if(n==28)f.stages.insert(f.stages.begin(),stage(Kind::Rotate,.03f,.08f,.02f));
+  if(n==30){f.iterations=10;f.terminal=2;f.bailout=100;f.repeatPeriod={5,5,5};f.stages={stage(Kind::Tetra),stage(Kind::Scale,2,0),stage(Kind::Offset,-1,-1,-1)};}
+  if(n==31){f.julia=true;f.logarithmic=true;f.constant={.25f,-.15f,.1f};f.repeatPeriod={3.5f,3.5f,3.5f};f.stages={stage(Kind::Bulb,8,1,1),stage(Kind::Scale,1,1)};}
+ }else if(n==32){f.iterations=12;f.logarithmic=true;f.repeat=true;f.repeatPeriod={3.5f,3.5f,3.5f};f.stages={stage(Kind::Bulb,8,1,1),stage(Kind::Scale,1,1)};
+ }else if(n==33){f.iterations=12;f.logarithmic=true;f.stages={stage(Kind::Absolute),stage(Kind::Bulb,5,1,1),stage(Kind::Scale,1,1)};
+ }else if(n==34){f.iterations=10;f.logarithmic=true;f.stages={stage(Kind::BoxFold,1),stage(Kind::Bulb,4,1,1),stage(Kind::Scale,1,1)};
+ }else if(n==35){f.iterations=20;f.bailout=32;f.stages={stage(Kind::BoxFold,1),stage(Kind::SphereFold,.5f,1),stage(Kind::Scale,-1.5f,1)};
  }
  std::string error;f.validate(error);return f;
+}
+Settings presetSettings(int n){
+ Settings s;s.farClip=40;s.convergence=std::fmax(.2f,-presetCamera(n).position.z);
+ if(n>=24){
+  s.adaptivePrecision=true;s.steps=96;s.fog=.018f;s.specular=.45f;s.customGradient=true;
+  s.gradientLow={.08f,.12f,.2f};s.gradientHigh={.65f,.8f,.95f};s.gradientScale=1.2f;
+  if(n==24){s.gradientLow={.12f,.008f,.012f};s.gradientHigh={.95f,.035f,.02f};s.specular=.85f;}
+  if(n==26||n==27){s.gradientLow={.1f,.07f,.01f};s.gradientHigh={.95f,.95f,.12f};s.gradientRepeat=true;s.gradientScale=3;}
+  if(n==28||n==31){s.gradientLow={.12f,.015f,.2f};s.gradientHigh={.85f,.5f,.95f};}
+  if(n==32||n==33){s.gradientLow={.02f,.15f,.05f};s.gradientHigh={.7f,.95f,.3f};}
+ }
+ return s;
 }
 template<bool Trap> Sample evaluateGenericDistance(const Formula& f,Vec p,bool exact=false){
  Vec z=p,c=f.julia?f.constant:p;float dr=1,trap=1e6f,r=0;

@@ -7,24 +7,29 @@ void GpuSurface::synchronize(){
  if(initialized&&C3D_FrameBegin(0))C3D_FrameEnd(GX_CMDLIST_FLUSH);
 }
 bool GpuSurface::upload(const SurfaceMesh& mesh){
- if(mesh.vertices.empty()||mesh.vertices.size()>65535||mesh.indices.empty()||mesh.indices.size()%3)return false;
- shutdown();
- if(!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE))return false;
- initialized=true;
- shader=DVLB_ParseFile((u32*)mesh_shbin,mesh_shbin_size);if(!shader){shutdown();return false;}
- shaderProgramInit(&program);shaderProgramSetVsh(&program,&shader->DVLE[0]);
- if(!program.vertexShader){shutdown();return false;}
- projectionLocation=shaderInstanceGetUniformLocation(program.vertexShader,"projection");
- vertices=static_cast<SurfaceVertex*>(linearAlloc(mesh.vertices.size()*sizeof(SurfaceVertex)));
- indices=static_cast<uint16_t*>(linearAlloc(mesh.indices.size()*sizeof(uint16_t)));
- if(!vertices||!indices||projectionLocation<0){shutdown();return false;}
+ constexpr size_t maxVertices=(W/4)*(H/4),maxIndices=(W/4-1)*(H/4-1)*6;
+ if(mesh.vertices.empty()||mesh.vertices.size()>maxVertices||mesh.indices.empty()||mesh.indices.size()>maxIndices||mesh.indices.size()%3)return false;
+ for(auto index:mesh.indices)if(index>=mesh.vertices.size())return false;
+ if(!initialized){
+  if(!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE))return false;
+  initialized=true;
+  shader=DVLB_ParseFile((u32*)mesh_shbin,mesh_shbin_size);if(!shader){shutdown();return false;}
+  shaderProgramInit(&program);shaderProgramSetVsh(&program,&shader->DVLE[0]);
+  if(!program.vertexShader){shutdown();return false;}
+  projectionLocation=shaderInstanceGetUniformLocation(program.vertexShader,"projection");
+  vertices=static_cast<SurfaceVertex*>(linearAlloc(maxVertices*sizeof(SurfaceVertex)));
+  indices=static_cast<uint16_t*>(linearAlloc(maxIndices*sizeof(uint16_t)));
+  if(!vertices||!indices||projectionLocation<0){shutdown();return false;}
+  constexpr u32 transfer=GX_TRANSFER_FLIP_VERT(0)|GX_TRANSFER_OUT_TILED(0)|GX_TRANSFER_RAW_COPY(0)|GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8)|GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8)|GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO);
+  for(int eye=0;eye<2;++eye){targets[eye]=C3D_RenderTargetCreate(H,W,GPU_RB_RGBA8,GPU_RB_DEPTH24_STENCIL8);
+   if(!targets[eye]){shutdown();return false;}C3D_RenderTargetSetOutput(targets[eye],GFX_TOP,eye?GFX_RIGHT:GFX_LEFT,transfer);
+  }
+ }else synchronize();
+ // Reuse shaders, targets and fixed-capacity buffers; wait before overwriting GPU inputs.
+ ready=false;
  std::memcpy(vertices,mesh.vertices.data(),mesh.vertices.size()*sizeof(SurfaceVertex));
  std::memcpy(indices,mesh.indices.data(),mesh.indices.size()*sizeof(uint16_t));
- if(R_FAILED(GSPGPU_FlushDataCache(vertices,mesh.vertices.size()*sizeof(SurfaceVertex)))||R_FAILED(GSPGPU_FlushDataCache(indices,mesh.indices.size()*sizeof(uint16_t)))){shutdown();return false;}
- constexpr u32 transfer=GX_TRANSFER_FLIP_VERT(0)|GX_TRANSFER_OUT_TILED(0)|GX_TRANSFER_RAW_COPY(0)|GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8)|GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8)|GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO);
- for(int eye=0;eye<2;++eye){targets[eye]=C3D_RenderTargetCreate(H,W,GPU_RB_RGBA8,GPU_RB_DEPTH24_STENCIL8);
-  if(!targets[eye]){shutdown();return false;}C3D_RenderTargetSetOutput(targets[eye],GFX_TOP,eye?GFX_RIGHT:GFX_LEFT,transfer);
- }
+ if(R_FAILED(GSPGPU_FlushDataCache(vertices,mesh.vertices.size()*sizeof(SurfaceVertex)))||R_FAILED(GSPGPU_FlushDataCache(indices,mesh.indices.size()*sizeof(uint16_t))))return false;
  origin=mesh.origin;count=int(mesh.indices.size());ready=true;return true;
 }
 bool GpuSurface::draw(const Scene& s,float slider){
