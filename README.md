@@ -12,6 +12,7 @@ A customizable stereoscopic fractal laboratory for New Nintendo 3DS homebrew, wi
 - Optional full-resolution quality mode with doubled ray-step limit, tighter hit tolerance and 1/2/4 subpixel samples.
 - Configurable iterations, bailout, distance estimator, derivative scale, step safety, ray steps, lighting, ambient occlusion, shadows, palettes, fog, exposure, camera and stereo geometry.
 - New 3DS high-speed request and optional CPU 2 worker. Both CPUs claim jobs from a shared queue in mono and stereo modes, with automatic serial fallback. Batch size adapts to measured work cost.
+- Completed single-sample images support trace-free gradient edits, with parallel recoloring at fine resolution and one color evaluation per coarse block. Polynomial expression Julia formulas have direct derivative kernels; edited formulas retain the general interpreter.
 - Eight SD scene slots and PPM stereo-pair export. Saved scenes include custom expressions and all settings.
 
 ## Build / install

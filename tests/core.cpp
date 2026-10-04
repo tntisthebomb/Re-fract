@@ -1,6 +1,8 @@
 #include "engine.hpp"
 #include "ui.hpp"
 #include "batch_queue.hpp"
+#include "framebuffer.hpp"
+#include <limits>
 #include <thread>
 #include <iostream>
 #include <fstream>
@@ -36,6 +38,25 @@ int main(int argc,char** argv){
  check(e.compile("(-2)^3",error)&&e.evaluate(z,c,d)&&near(d.value,-8),"negative integer powers");
  check(e.compile("sin(pi/2)+2*3+x",error)&&e.count==3&&e.evaluate({4,0,0},{},d)&&near(d.value,11)&&near(d.d[0],1),"constant folding preserves value and derivative");
  check(e.compile("(-2)^x",error)&&!e.evaluate(z,c,d),"negative variable powers rejected");
+ for(const char* polynomial:{"x*x-y*y-z*z+cx","2*x*y+cy","2*x*z+cz"}){
+  check(e.compile(polynomial,error)&&e.native>0,"polynomial bytecode selects native derivative path");
+  for(int i=0;i<500;++i){Vec z{(i%31-15)*.173f,(i%43-21)*.119f,(i%47-23)*.127f};Dual a,b;
+   bool av=e.evaluate(z,c,a),bv=e.evaluateGeneric(z,c,b);check(av==bv&&(!av||(a.value==b.value&&a.d==b.d)),"native expression matches interpreter values and all derivatives");
+  }
+  for(Vec extreme:{Vec{1e30f,1e30f,1e30f},Vec{std::numeric_limits<float>::infinity(),1,1},Vec{std::numeric_limits<float>::quiet_NaN(),1,1}}){Dual a,b;check(e.evaluate(extreme,c,a)==e.evaluateGeneric(extreme,c,b),"native expression preserves overflow rejection");}
+ }
+ check(e.compile(" 2 * x * y + cy ",error)&&e.native==2,"native expression accepts whitespace");
+ check(e.compile("2*x*y+cz",error)&&e.native==0,"edited polynomial falls back safely");
+ for(int width:{320,400,319}){std::vector<Color> source(width*H);for(int k=0;k<width*H;++k)source[k]={uint8_t(k*3),uint8_t(k*7),uint8_t(k*11)};
+  std::vector<uint8_t> target(width*H*3+16,0xCD);convertFramebuffer(target.data()+8,source.data(),width);bool matches=true;
+  for(int x=0;x<width;++x)for(int y=0;y<H;++y){auto c=source[y*width+x];int k=8+(x*H+H-1-y)*3;matches&=target[k]==c.b&&target[k+1]==c.g&&target[k+2]==c.r;}
+  check(matches,"framebuffer conversion matches landscape-to-BGR mapping");for(int k=0;k<8;++k)check(target[k]==0xCD&&target[target.size()-1-k]==0xCD,"framebuffer transpose keeps guard bytes");
+ }
+ {std::array<std::atomic<int>,257> visits{};LoopQueue loop;
+  auto body=[](int i,void* ctx){++(*static_cast<std::array<std::atomic<int>,257>*>(ctx))[i];};
+  for(int count:{0,1,2,31,257}){for(auto& v:visits)v.store(0);loop.reset(count,body,&visits);std::thread worker([&](){loop.consume();});loop.consume();worker.join();
+   for(int k=0;k<257;++k)check(visits[k].load()==(k<count?1:0),"parallel for executes each iteration exactly once");}
+ }
  for(int i=0;i<PresetCount;++i){Formula f=preset(i);check(f.validate(error),"preset validates");
   for(int j=0;j<20;++j){Sample s=distance(f,{float(j-10)*.17f,float(j%5)*.19f,float(j%7)*.15f});
    check(s.valid&&std::isfinite(s.distance)&&s.distance>=0&&std::isfinite(s.trap),"preset DE finite and nonnegative");
@@ -152,6 +173,15 @@ int main(int argc,char** argv){
  s.settings.previewBlock=16;s.settings.autoRefine=false;renderer.invalidate(s,false);while(!renderer.complete())renderer.step(s,rays,0);
  auto cacheRays=renderer.rays();s.settings.palette=2;check(renderer.recolor(s)&&renderer.rays()==cacheRays,"completed cache recolors without tracing");
  renderer.invalidate(s,true);check(!renderer.recolor(s),"moving cache cannot recolor");
+ // Exercise parallel material rows using the same two-consumer loop as native.
+ s.settings.previewBlock=4;s.settings.autoRefine=false;Renderer parallelColor,serialColor;int loops=0;
+ parallelColor.setParallelFor([](int n,LoopBody body,void* context,void* counter){++*static_cast<int*>(counter);LoopQueue q;q.reset(n,body,context);std::thread worker([&](){q.consume();});q.consume();worker.join();},&loops);
+ parallelColor.invalidate(s,false);serialColor.invalidate(s,false);
+ while(!parallelColor.complete())parallelColor.step(s,rays,1);
+ while(!serialColor.complete())serialColor.step(s,rays,1);
+ s.settings.gradientOffset=.27f;s.settings.exposure=1.31f;
+ auto countBefore=parallelColor.rays();check(parallelColor.recolor(s)&&serialColor.recolor(s)&&loops==1&&parallelColor.rays()==countBefore,"parallel recoloring uses persistent-loop interface without ray tracing");
+ for(int eye=0;eye<2;++eye){bool equal=true;for(int k=0;k<W*H;++k){auto a=parallelColor.image(eye)[k],b=serialColor.image(eye)[k];equal&=a.r==b.r&&a.g==b.g&&a.b==b.b;}check(equal,"parallel material rows match serial output");}
  if(argc>1){
   std::string prefix=argv[1];s=Scene{};s.settings.previewBlock=4;s.settings.autoRefine=false;
   for(int n=0;n<PresetCount;++n){s.formula=preset(n);s.camera=presetCamera(n);s.settings.farClip=40;s.settings.convergence=-s.camera.position.z;rays=Rays(s);renderer.invalidate(s,false);

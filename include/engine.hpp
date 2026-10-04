@@ -23,9 +23,10 @@ struct Instruction {Op op;float value=0;int variable=0;};
 // Dual values carry partial derivatives w.r.t. x,y,z,cx,cy,cz.
 struct Dual {float value=0;std::array<float,6> d{};};
 struct Expression {
- std::array<Instruction,MaxCode> code{};int count=0,stack=0;
+ std::array<Instruction,MaxCode> code{};int count=0,stack=0,native=0;
  bool compile(const std::string& text,std::string& error);
  bool evaluate(Vec z,Vec c,Dual& result)const;
+ bool evaluateGeneric(Vec z,Vec c,Dual& result)const;
 };
 enum class Kind {BoxFold,SphereFold,Bulb,Scale,Rotate,Offset,Absolute,Sort,Menger,Tetra,Expression,Count};
 const char* kindName(Kind k);
@@ -102,6 +103,8 @@ struct RenderResult {ShadeRecord shade;Color color;Vec point;float depth=0;bool 
 RenderResult renderJob(const Scene& s,const Rays& rays,const RenderJob& job);
 void renderJobs(const Scene& s,const Rays& rays,const RenderJob* jobs,RenderResult* results,int count);
 using BatchShader=void (*)(const Scene&,const Rays&,const RenderJob*,RenderResult*,int,void*);
+using LoopBody=void (*)(int,void*);
+using ParallelFor=void (*)(int,LoopBody,void*,void*);
 class Renderer {
  std::array<std::vector<Color>,2> pixels;
  std::array<std::vector<float>,2> depths;
@@ -116,11 +119,13 @@ class Renderer {
  int block=8,lane=0,index=0;bool moving=false,done=false;
  uint64_t rayCount=0,revision=1;
  BatchShader batchShader=nullptr;void* shaderContext=nullptr;
+ ParallelFor parallelFor=nullptr;void* loopContext=nullptr;
  void reproject(const Scene& s,const Rays& rays,float slider);
  bool skipCell(const Scene& s,int x,int y,int eye,int cell);
  public:
  Renderer();
  void setBatchShader(BatchShader shader,void* context){batchShader=shader;shaderContext=context;}
+ void setParallelFor(ParallelFor loop,void* context){parallelFor=loop;loopContext=context;}
  void invalidate(const Scene& s,bool motion,bool clearHistory=true);
  void beginFrame(const Scene& s,bool motion,bool changed,float slider);
  bool recolor(const Scene& s);

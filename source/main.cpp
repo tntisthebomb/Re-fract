@@ -2,6 +2,7 @@
 #include "engine.hpp"
 #include "ui.hpp"
 #include "stereo_worker.hpp"
+#include "framebuffer.hpp"
 #include <functional>
 #include <algorithm>
 #include <cstdio>
@@ -22,16 +23,19 @@ bool keyboard(const std::string& prompt,std::string& value){
  value=buffer;return true;
 }
 void blit(u8* frame,const std::vector<Color>& pixels,int width){
- // Landscape (x,y) -> rotated, column-major BGR8 framebuffer.
- for(int x=0;x<width;++x)for(int y=0;y<240;++y){const Color& c=pixels[y*width+x];size_t i=(x*240+239-y)*3;
-  frame[i]=c.b;frame[i+1]=c.g;frame[i+2]=c.r;
- }
+ convertFramebuffer(frame,pixels.data(),width);
 }
 struct FrameCopyCache {
  u8* addresses[2]={nullptr,nullptr};uint64_t revisions[2]={0,0};bool valid[2]={false,false};
- void copy(u8* address,const std::vector<Color>& pixels,uint64_t revision){
+ void copy(u8* address,const std::vector<Color>& pixels,uint64_t revision,int width=W){
   int slot=address==addresses[0]?0:address==addresses[1]?1:addresses[0]==nullptr?0:1;
-  if(!valid[slot]||addresses[slot]!=address||revisions[slot]!=revision){blit(address,pixels,W);addresses[slot]=address;revisions[slot]=revision;valid[slot]=true;}
+  if(!valid[slot]||addresses[slot]!=address||revisions[slot]!=revision){
+   blit(address,pixels,width);
+   // libctru's gfxFlushBuffers flushes every screen unconditionally. Flush
+   // exactly this modified buffer before marking its revision visible to GSP.
+   Result flushed=GSPGPU_FlushDataCache(address,width*H*3);
+   addresses[slot]=address;revisions[slot]=revision;valid[slot]=R_SUCCEEDED(flushed);
+  }
  }
  void reset(){valid[0]=valid[1]=false;}
 };
@@ -46,13 +50,13 @@ Stage newStage(Kind kind){Stage s;s.kind=kind;s.a=0;s.b=0;s.c=0;
 }
 int main(){
  gfxInitDefault();gfxSet3D(false);osSetSpeedupEnable(true);
- FrameCopyCache topCopies[2];bool displayStereo=false;
+ FrameCopyCache topCopies[2],bottomCopies;bool displayStereo=false;uint64_t panelRevision=1;float panelWorkMs=-1;
  bool new3ds=false;APT_CheckNew3DS(&new3ds);
  mkdir("sdmc:/3ds",0777);mkdir("sdmc:/3ds/Re-fract",0777);
  auto sceneOwner=std::make_unique<Scene>();auto rendererOwner=std::make_unique<Renderer>();
  Scene& scene=*sceneOwner;Renderer& renderer=*rendererOwner;Canvas bottom(320,240);
  StereoWorker worker(new3ds);
- if(worker.available())renderer.setBatchShader(StereoWorker::shade,&worker);
+ if(worker.available()){renderer.setBatchShader(StereoWorker::shade,&worker);renderer.setParallelFor(StereoWorker::parallelFor,&worker);}
  int tab=0,selected=0,presetIndex=0,stageIndex=0,slot=0;float slider=0,workMs=0;StereoSlider sliderControl;uint64_t sliderUntil=0;
  std::string status=worker.available()?"NEW 3DS / TWO CPU BATCHES":new3ds?"NEW 3DS / SINGLE CPU FALLBACK":"OLD 3DS / USE 16X PREVIEW";
  if(!new3ds){scene.settings.previewBlock=16;scene.settings.budgetMs=5;}
@@ -63,7 +67,7 @@ int main(){
   uint64_t now=osGetTime();float dt=clamp(float(now-previous)*.001f,.001f,.05f);previous=now;
   hidScanInput();u32 down=hidKeysDown(),held=hidKeysHeld();
   if(down&KEY_START)break;
-  changed=false;
+  changed=false;bool panelRefresh=false;
   if(down&KEY_SELECT){tab=(tab+1)%6;selected=0;}
   if(down&KEY_Y){scene.settings.quality=!scene.settings.quality;changed=true;status=scene.settings.quality?"QUALITY: FULL RES / SLOW":"LIVE PREVIEW";}
   if(down&KEY_B){scene.camera=presetIndex>=0?presetCamera(presetIndex):Camera{};changed=true;status="CAMERA RESET";}
@@ -88,7 +92,7 @@ int main(){
    scene.camera.position.z=clamp(scene.camera.position.z,-10000,10000);
   }
   if(menuDirty||changed||menuTab!=tab||(motion&&tab==4)||(tab==5&&now>=nextMenuRefresh)){
-  fields.clear();menuDirty=false;menuTab=tab;nextMenuRefresh=now+250;
+  fields.clear();menuDirty=false;menuTab=tab;nextMenuRefresh=now+250;panelRefresh=true;
   auto action=[&](std::string label,std::string value,std::function<void()> fn){fields.push_back({{label,value},{},fn});};
   auto real=[&](std::string label,float& v,float step,float lo,float hi){
    fields.push_back({{label,number(v)},[&,step,lo,hi](int d){v=clamp(v+d*step,lo,hi);changed=true;},
@@ -224,21 +228,25 @@ int main(){
    if(material&&renderer.recolor(scene)){changed=false;status="COLOR UPDATED / GEOMETRY REUSED";}
   }
   renderer.beginFrame(scene,motion||now<sliderUntil,changed,slider);
-  Rays rays(scene);uint64_t start=osGetTime(),beforeRays=renderer.rays();
+  Rays rays(scene);uint64_t start=osGetTime(),beforeRays=renderer.rays(),beforeRevision=renderer.imageRevision();
   while(!renderer.complete()){
    renderer.step(scene,rays,slider);
    if(float(osGetTime()-start)>=scene.settings.budgetMs)break;
   }
   workMs=float(osGetTime()-start);
   // Fields are rebuilt next frame; do not dereference captures after a vector edit.
-  std::vector<Row> rows;for(const Field& f:fields)rows.push_back(f.row);
+  // A finished, idle scene does not need a UI redraw or bottom-screen transfer.
+  if(panelRefresh||changed||down||repeat||motion||now<sliderUntil||workMs!=panelWorkMs||renderer.imageRevision()!=beforeRevision){
+  panelWorkMs=workMs;
+  ++panelRevision;std::vector<Row> rows;rows.reserve(fields.size());for(const Field& f:fields)rows.push_back(f.row);
   drawPanel(bottom,tab,selected,rows,status,presetIndex<0?"CUSTOM SCENE":presetName(presetIndex),renderer.currentBlock(),renderer.progress(scene),scene.settings.quality,workMs);
   if(tab==4){Settings gradient=scene.settings;gradient.gradientScale=1;gradient.gradientOffset=0;gradient.gradientRepeat=false;
    for(int x=0;x<300;++x){Vec c=gradientColor(gradient,float(x)/299);bottom.rect(10+x,67,1,3,{uint8_t(c.x*255),uint8_t(c.y*255),uint8_t(c.z*255)});}}
+  }
   topCopies[0].copy(gfxGetFramebuffer(GFX_TOP,GFX_LEFT,nullptr,nullptr),renderer.image(0),renderer.imageRevision());
   if(activeStereo)topCopies[1].copy(gfxGetFramebuffer(GFX_TOP,GFX_RIGHT,nullptr,nullptr),renderer.image(1),renderer.imageRevision());
-  blit(gfxGetFramebuffer(GFX_BOTTOM,GFX_LEFT,nullptr,nullptr),bottom.pixels,320);
-  gfxFlushBuffers();gfxSwapBuffers();gspWaitForVBlank();
+  bottomCopies.copy(gfxGetFramebuffer(GFX_BOTTOM,GFX_LEFT,nullptr,nullptr),bottom.pixels,panelRevision,320);
+  gfxSwapBuffers();gspWaitForVBlank();
   renderer.endFrame(scene,float(osGetTime()-now),workMs,renderer.rays()-beforeRays);
  }
  worker.shutdown();gfxExit();return 0;

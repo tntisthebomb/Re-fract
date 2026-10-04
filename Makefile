@@ -48,7 +48,7 @@ MAKEROM ?= makerom
 #---------------------------------------------------------------------------------
 # options for code generation
 #---------------------------------------------------------------------------------
-ARCH	:=	-march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
+ARCH	:=	-march=armv6k -mtune=mpcore -mfpu=vfp -mfloat-abi=hard -mtp=soft
 
 CFLAGS	:=	-g -Wall -Wextra -O3 -mword-relocations \
 			-ffunction-sections \
@@ -56,7 +56,10 @@ CFLAGS	:=	-g -Wall -Wextra -O3 -mword-relocations \
 
 CFLAGS	+=	$(INCLUDE) -D__3DS__
 
-CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++17
+# Geometry validates finite results directly; no math errno is consumed. This
+# permits hardware sqrt instead of an errno-preserving library wrapper. Keep
+# IEEE finite/domain checks (do not use -ffast-math or -ffinite-math-only).
+CXXFLAGS	:= $(CFLAGS) -fno-math-errno -fno-rtti -fno-exceptions -std=gnu++17
 
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)

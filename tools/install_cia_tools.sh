@@ -6,9 +6,9 @@ curl -fL --retry 3 https://github.com/Epicpkmn11/bannertool/releases/download/v1
 curl -fL --retry 3 https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.19.0/makerom-v0.19.0-ubuntu_x86_64.zip -o .tools/unpack/makerom.zip
 unzip -qo .tools/unpack/bannertool.zip -d .tools/unpack/bannertool
 unzip -qo .tools/unpack/makerom.zip -d .tools/unpack/makerom
-banner_binary=$(find .tools/unpack/bannertool -type f -name bannertool -path '*linux*' | head -n 1)
+banner_binary=.tools/unpack/bannertool/linux-x86_64/bannertool
 makerom_binary=$(find .tools/unpack/makerom -type f -name makerom | head -n 1)
-test -n "$banner_binary"
+test -f "$banner_binary"
 test -n "$makerom_binary"
 install -m 755 "$banner_binary" .tools/bin/bannertool
 install -m 755 "$makerom_binary" .tools/bin/makerom
