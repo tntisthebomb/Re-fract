@@ -41,6 +41,8 @@ GFXBUILD	:=	$(BUILD)
 APP_TITLE := Re-fract
 APP_DESCRIPTION := Stereo fractal laboratory
 APP_AUTHOR := tntisthebomb
+ICON := icon.png
+MAKEROM ?= makerom
 #GFXBUILD	:=	$(ROMFS)/gfx
 
 #---------------------------------------------------------------------------------
@@ -166,6 +168,11 @@ endif
 all: $(BUILD) $(GFXBUILD) $(DEPSDIR) $(ROMFS_T3XFILES) $(T3XHFILES)
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
+.PHONY: cia
+cia: all
+	@test -s build/banner/cube.bnr || (echo 'Generate build/banner/cube.bnr first; see README.'; exit 1)
+	$(MAKEROM) -f cia -target t -exefslogo -o $(TARGET).cia -elf $(TARGET).elf -rsf tools/build-cia.rsf -icon $(TARGET).smdh -banner build/banner/cube.bnr -major 0 -minor 1 -micro 0
+
 $(BUILD):
 	@mkdir -p $@
 
@@ -229,4 +236,3 @@ $(OUTPUT).elf	:	$(OFILES)
 #---------------------------------------------------------------------------------------
 endif
 #---------------------------------------------------------------------------------------
-

@@ -21,7 +21,7 @@ Install devkitPro's `3ds-dev` package (devkitARM, libctru and tools), then run:
 make -j2
 ```
 
-Copy `Re-fract.3dsx` and `Re-fract.smdh` into `sd:/3ds/Re-fract/` and launch through Homebrew Launcher on a homebrew-enabled console. The Actions **Build and test** workflow also builds a downloadable `Re-fract-3dsx` artifact when successful. A CIA installer is not part of this initial implementation.
+Copy `Re-fract.3dsx` and `Re-fract.smdh` into `sd:/3ds/Re-fract/` and launch through Homebrew Launcher on a homebrew-enabled console. The Actions **Build and test** workflow also builds a downloadable `Re-fract-3dsx` artifact when successful. The `Re-fract-3dsx-and-cia` Actions artifact also includes `Re-fract.cia` for installation on a homebrew-enabled New 3DS. Its HOME Menu banner is a textured 3D cube with an eight-second looping turn. The CIA requests New 3DS memory, 804 MHz CPU, L2 cache and access to CPU 2. Its application title ID is `000400000F7AC700`.
 
 ## Controls
 
@@ -78,10 +78,24 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror -Iinclude source/expression.cpp source/
 
 The initial source was developed with desktop validation. Console build status is reported by Actions; startup, keyboard applets, stereo comfort, worker affinity and sustained performance still require hardware testing.
 
-## Artwork
+## Artwork and animated banner
 
-Provide a **48x48 PNG** for the launcher icon and place it at repository root as `icon.png`. The Makefile picks it up automatically; the libctru default icon is used until then. Keep lettering readable at 24x24 as well.
+The supplied eye artwork is used in `icon.png` (48x48 launcher icon) and `assets/icon-art.png` (256x256 cube texture). It is resized with Lanczos filtering without cropping. Every cube face carries the same image. The cube is genuine CGFX geometry with a native looping skeletal animation; the eight-second yaw curve is encoded directly to avoid quaternion/Euler discontinuities. Banner audio is silent.
 
-For future CIA HOME Menu packaging, provide a **256x128 PNG** banner (and optional banner sound). That is a separate packaging step. An in-app title image would instead use **400x240** for the top screen; the current application launches directly into the renderer and does not yet load a title image. The UI texture is procedural and needs no supplied asset.
+GitHub Actions authors the cube with our `tools/build_banner.py`, converts it through a pinned [pycgfx](https://github.com/skyfloogle/pycgfx) checkout, packages the CGFX with [bannertool](https://github.com/Epicpkmn11/bannertool), then creates the CIA with [makerom](https://github.com/3DSGuy/Project_CTR). Converter source is downloaded at build time rather than redistributed in this repository. No Nintendo banner model or audio is included. The `Re-fract-banner` artifact includes the model, animation, banner and manifest for inspection.
+
+To build locally on Linux x86_64 (Python 3.12 and the 3DS toolchain required):
+
+```sh
+python3 -m pip install gltflib==1.0.13 Pillow==11.3.0
+git clone https://github.com/skyfloogle/pycgfx.git .tools/pycgfx
+git -C .tools/pycgfx checkout 1f78850086f3a77c41e07162e842f97a5bf3c18a
+bash tools/install_cia_tools.sh
+python3 tools/build_banner.py --converter .tools/pycgfx
+.tools/bin/bannertool makebanner -ci build/banner/cube.cgfx -a build/banner/silence.wav -o build/banner/cube.bnr
+make cia MAKEROM=.tools/bin/makerom
+```
+
+The model's dimensions fit the HOME Menu banner camera, and the generator checks the 512 KiB CGFX size limit. The actual HOME Menu appearance and looping playback still need console validation. No additional flat banner image is needed. The in-app UI texture remains procedural.
 
 The project currently has no assigned license. Choose one before distributing code under a specific license.
