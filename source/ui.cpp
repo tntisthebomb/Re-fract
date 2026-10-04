@@ -86,9 +86,10 @@ void drawPanel(Canvas& c,int tab,int selected,const std::vector<Row>& rows,const
  c.rect(6,5,308,26,{36,32,24});c.rect(6,5,4,26,rust);c.text(15,8,"RE-FRACT",bone,2);
  c.text(190,9,quality?"QUALITY / STILL":"LIVE / INTERLACED",rust);
  char perf[40];std::snprintf(perf,sizeof(perf),"%dX  %.1F MS  %d%%",block,workMs,int(progress*100));c.text(190,21,perf,dim);
- const char* tabs[]={"PRESET","RENDER","FORMULA","STAGE","LIGHT","FILES"};
+ const char* tabs[]={"PRESET","RENDER","FORMULA","STAGE","COLOR","FILES"};
  for(int i=0;i<6;++i){int x=6+i*52;c.rect(x,36,50,17,i==tab?rust:Color{45,42,34});c.text(x+4,41,tabs[i],i==tab?Color{21,20,17}:bone);}
- c.text(10,59,name.substr(0,49),dim);
+ c.text(10,59,name.substr(0,37),dim);
+ char page[20];std::snprintf(page,sizeof(page),"%d/%d",selected/8+1,int((rows.size()+7)/8));c.text(280,59,page,rust);
  int first=(selected/8)*8;
  for(int j=0;j<8&&first+j<int(rows.size());++j){int i=first+j,y=73+j*15;
   if(i==selected){c.rect(6,y-3,308,14,{66,48,30});c.rect(6,y-3,3,14,rust);}

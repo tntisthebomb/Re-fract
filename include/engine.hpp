@@ -36,6 +36,8 @@ struct Stage {
  std::array<std::string,3> text{{"x","y","z"}};
  std::array<Expression,3> expr;
  std::array<float,9> rotation{{1,0,0,0,1,0,0,0,1}};
+ float minimum2=.25f,fixed2=1,innerScale=4,thetaPower=0,phiPower=0,stretch=1;
+ int integerPower=-1;
  bool compile(std::string& error);
 };
 struct Formula {
@@ -43,6 +45,7 @@ struct Formula {
  bool logarithmic=false,julia=false;Vec constant{0,0,0};
  float derivativeScale=1;
  int terminal=0;float terminalRadius=1;
+ std::array<int,MaxStages> active{};int activeCount=0;
  bool validate(std::string& error);
 };
 Formula preset(int index);
@@ -50,6 +53,7 @@ const char* presetName(int index);
 constexpr int PresetCount=18;
 struct Sample {float distance=0,trap=0;bool valid=true;};
 Sample distance(const Formula& f,Vec p);
+Sample distanceOnly(const Formula& f,Vec p);
 struct Settings {
  int steps=64,previewBlock=8,interlace=4,ao=0,shadow=0,samples=1;
  float epsilon=.002f,safety=.65f,farClip=20,fov=55;
@@ -57,34 +61,66 @@ struct Settings {
  float lightYaw=-.7f,lightPitch=.8f,palette=0,specular=.2f;
  bool stereo=true,quality=false,autoRefine=true,parallel=true;
  float budgetMs=8;
+ int batchSize=8,targetFps=30,historyFrames=6,refreshRate=2;
+ bool adaptiveResolution=true,previewLighting=true,temporal=false,stereoReuse=false;
+ bool adaptiveTiles=false,foveated=false;
+ float relaxation=1;
+ bool customGradient=false,gradientRepeat=false;
+ Vec gradientLow{.18f,.06f,.025f},gradientHigh{.95f,.58f,.22f};
+ float gradientScale=.8f,gradientOffset=0;
 };
-struct Camera {Vec position{0,0,-4};float yaw=0,pitch=0,speed=1;};
+struct Camera {Vec position{0,0,-4};float yaw=0,pitch=0,speed=1;bool surfaceSpeed=true;float surfaceRange=1,minimumSpeed=.01f;};
 Camera presetCamera(int index);
 struct Scene {Formula formula=preset(0);Settings settings;Camera camera;};
+float cameraSpeedScale(const Scene& s);
+Vec gradientColor(const Settings& s,float trap);
 struct Rays {
  Vec forward,right,up,light;float tangent=1;
  explicit Rays(const Scene& s);
  void ray(const Scene& s,float x,float y,float eye,Vec& origin,Vec& direction)const;
+ bool project(const Scene& s,Vec point,float eye,float& x,float& y,float& depth)const;
 };
 struct Color {uint8_t r=0,g=0,b=0;};
 Color trace(const Scene& s,const Rays& rays,float x,float y,float eye);
 Color shadeCell(const Scene& s,const Rays& rays,int x,int y,int block,float eye,int count);
-using StereoShader=void (*)(const Scene&,const Rays&,int,int,int,float,int,Color&,Color&,void*);
+struct Profile {
+ uint64_t rays=0,steps=0,distanceQueries=0,shadingQueries=0,reused=0,skipped=0,relaxFallbacks=0,batches=0;
+ void add(const Profile& p);
+};
+struct RenderJob {int x=0,y=0,block=1,eye=0;float offset=0;bool fast=false;};
+struct RenderResult {Color color;Vec point;float depth=0;bool hit=false;Profile profile;};
+RenderResult renderJob(const Scene& s,const Rays& rays,const RenderJob& job);
+void renderJobs(const Scene& s,const Rays& rays,const RenderJob* jobs,RenderResult* results,int count);
+using BatchShader=void (*)(const Scene&,const Rays&,const RenderJob*,RenderResult*,int,void*);
 class Renderer {
  std::array<std::vector<Color>,2> pixels;
+ std::array<std::vector<float>,2> depths;
+ std::array<std::vector<uint8_t>,2> ages;
+ struct History {Vec point;Color color;float footprint=0;uint32_t stamp=0;int eye=0;};
+ std::array<History,8192> history{};size_t historyCount=0,historyCursor=0;
+ uint32_t frame=0;int dynamicBlock=8,batchLimit=8;
+ float averageJobMs=0,frameMs=0;Profile totals;
  int block=8,lane=0,index=0;bool moving=false,done=false;
  uint64_t rayCount=0;
- StereoShader stereoShader=nullptr;void* shaderContext=nullptr;
+ BatchShader batchShader=nullptr;void* shaderContext=nullptr;
+ void reproject(const Scene& s,const Rays& rays,float slider);
+ bool skipCell(const Scene& s,int x,int y,int eye,int cell);
  public:
  Renderer();
- void setStereoShader(StereoShader shader,void* context){stereoShader=shader;shaderContext=context;}
- void invalidate(const Scene& s,bool motion);
- // One sample location, both eyes together; fixed-size work avoids a whole-frame stall.
+ void setBatchShader(BatchShader shader,void* context){batchShader=shader;shaderContext=context;}
+ void invalidate(const Scene& s,bool motion,bool clearHistory=true);
+ void beginFrame(const Scene& s,bool motion,bool changed,float slider);
+ void endFrame(const Scene& s,float totalMs,float renderMs,uint64_t jobs);
+ // A bounded batch can be split between cores in mono and stereo modes.
  void step(const Scene& s,const Rays& rays,float slider);
  const std::vector<Color>& image(int eye)const{return pixels[eye];}
  bool complete()const{return done;}
  int currentBlock()const{return block;}
  uint64_t rays()const{return rayCount;}
+ const Profile& profile()const{return totals;}
+ void resetProfile(){totals={};}
+ int previewSize()const{return dynamicBlock;}
+ float measuredFrameMs()const{return frameMs;}
  float progress(const Scene& s)const;
 };
 bool saveScene(const Scene& scene,const std::string& path,std::string& error);

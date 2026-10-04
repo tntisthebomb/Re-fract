@@ -9,3 +9,6 @@ add_executable(core_tests tests/core.cpp)
 target_link_libraries(core_tests PRIVATE refract_core)
 enable_testing()
 add_test(NAME core COMMAND core_tests)
+
+add_executable(core_benchmark tests/benchmark.cpp)
+target_link_libraries(core_benchmark PRIVATE refract_core)

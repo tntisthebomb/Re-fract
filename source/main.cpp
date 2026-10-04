@@ -40,14 +40,15 @@ int main(){
  gfxInitDefault();gfxSet3D(true);osSetSpeedupEnable(true);
  bool new3ds=false;APT_CheckNew3DS(&new3ds);
  mkdir("sdmc:/3ds",0777);mkdir("sdmc:/3ds/Re-fract",0777);
- Scene scene;Renderer renderer;Canvas bottom(320,240);
+ auto sceneOwner=std::make_unique<Scene>();auto rendererOwner=std::make_unique<Renderer>();
+ Scene& scene=*sceneOwner;Renderer& renderer=*rendererOwner;Canvas bottom(320,240);
  StereoWorker worker(new3ds);
- if(worker.available())renderer.setStereoShader(StereoWorker::shade,&worker);
+ if(worker.available())renderer.setBatchShader(StereoWorker::shade,&worker);
  int tab=0,selected=0,presetIndex=0,stageIndex=0,slot=0;float slider=0,workMs=0;
- std::string status=worker.available()?"NEW 3DS / TWO CPU EYES":new3ds?"NEW 3DS / SINGLE CPU FALLBACK":"OLD 3DS / USE 16X PREVIEW";
+ std::string status=worker.available()?"NEW 3DS / TWO CPU BATCHES":new3ds?"NEW 3DS / SINGLE CPU FALLBACK":"OLD 3DS / USE 16X PREVIEW";
  if(!new3ds){scene.settings.previewBlock=16;scene.settings.budgetMs=5;}
  renderer.invalidate(scene,false);
- bool wasMoving=false;uint64_t previous=osGetTime(),nextRepeat=0;u32 lastDirection=0;
+ uint64_t previous=osGetTime(),nextRepeat=0;u32 lastDirection=0;
  while(aptMainLoop()){
   uint64_t now=osGetTime();float dt=clamp(float(now-previous)*.001f,.001f,.05f);previous=now;
   hidScanInput();u32 down=hidKeysDown(),held=hidKeysHeld();
@@ -70,7 +71,7 @@ int main(){
    if(scene.camera.yaw>3.14159265f)scene.camera.yaw-=6.2831853f;
    if(scene.camera.yaw< -3.14159265f)scene.camera.yaw+=6.2831853f;
    scene.camera.pitch=clamp(scene.camera.pitch+pitch*dt*1.3f,-1.5f,1.5f);
-   Rays basis(scene);float speed=scene.camera.speed*dt*(held&KEY_X?3:1);
+   Rays basis(scene);float speed=scene.camera.speed*cameraSpeedScale(scene)*dt*(held&KEY_X?3:1);
    scene.camera.position=scene.camera.position+(basis.forward*forward+basis.right*strafe+Vec{0,vertical,0})*speed;
    scene.camera.position.x=clamp(scene.camera.position.x,-10000,10000);
    scene.camera.position.y=clamp(scene.camera.position.y,-10000,10000);
@@ -100,8 +101,13 @@ int main(){
    real("FAR CLIP",v.farClip,1,1,100);real("FRAME BUDGET MS",v.budgetMs,1,1,20);boolean("AUTO REFINE",v.autoRefine);
    choice("QUALITY SAMPLES",v.samples,{1,2,4});integer("AO SAMPLES",v.ao,1,0,6);integer("SHADOW STEPS",v.shadow,4,0,64);
    boolean("STEREO",v.stereo);real("EYE SEPARATION",v.eyeSeparation,.005f,0,.2f);real("CONVERGENCE",v.convergence,.2f,.2f,30);
-   boolean("PARALLEL EYES",v.parallel);
+   boolean("PARALLEL BATCHES",v.parallel);
+   integer("BATCH SIZE",v.batchSize,1,1,32);boolean("ADAPT RESOLUTION",v.adaptiveResolution);integer("TARGET REFRESH FPS",v.targetFps,5,15,60);
+   boolean("FAST MOVE LIGHTING",v.previewLighting);boolean("TEMPORAL EXPERIMENT",v.temporal);boolean("STEREO REUSE EXP",v.stereoReuse);
+   boolean("ADAPTIVE TILES EXP",v.adaptiveTiles);boolean("FIXED FOVEATION EXP",v.foveated);real("RELAXATION EXP",v.relaxation,.05f,1,1.5f);
+   integer("HISTORY FRAMES",v.historyFrames,1,1,30);integer("REFRESH EVERY N",v.refreshRate,1,1,8);
    real("FIELD OF VIEW",v.fov,5,20,100);real("MOVE SPEED",scene.camera.speed,.1f,.01f,10);
+   boolean("SURFACE SLOWDOWN",scene.camera.surfaceSpeed);real("SLOWDOWN DISTANCE",scene.camera.surfaceRange,.1f,.001f,20);real("MIN SPEED FRACTION",scene.camera.minimumSpeed,.005f,.0001f,1);
   }else if(tab==2){Formula& f=scene.formula;
    integer("ITERATIONS",f.iterations,1,1,32);real("BAILOUT",f.bailout,1,2,256);boolean("LOG DISTANCE",f.logarithmic);
    integer("TERMINAL SHAPE",f.terminal,1,0,2);real("TERMINAL RADIUS",f.terminalRadius,.1f,.01f,100);
@@ -137,8 +143,19 @@ int main(){
    action("DUPLICATE STAGE","A COPY",[&](){if(f.stages.size()<MaxStages){Stage copy=a;f.stages.insert(f.stages.begin()+stageIndex+1,copy);++stageIndex;changed=true;}});
    action("DELETE STAGE","A REMOVE",[&](){if(f.stages.size()>1){f.stages.erase(f.stages.begin()+stageIndex);stageIndex=std::min(stageIndex,int(f.stages.size())-1);changed=true;}else status="KEEP AT LEAST ONE STAGE";});
   }else if(tab==4){Settings& v=scene.settings;
-   real("LIGHT YAW",v.lightYaw,.1f,-6.3f,6.3f);real("LIGHT PITCH",v.lightPitch,.1f,-1.5f,1.5f);
-   real("PALETTE 0..3",v.palette,1,0,3);real("EXPOSURE",v.exposure,.1f,.1f,4);
+   const char* names[]={"RUST","SEA GLASS","NEON ROSE","BONE"};
+   auto cyclePalette=[&](int d){v.palette=float((int(v.palette)+d+4)%4);v.customGradient=false;changed=true;};
+   fields.push_back({{"PALETTE",names[int(v.palette)%4]},cyclePalette,[cyclePalette](){cyclePalette(1);}});
+   boolean("CUSTOM GRADIENT",v.customGradient);
+   auto colorField=[&](std::string label,Vec& c){char hex[8];std::snprintf(hex,sizeof(hex),"%02X%02X%02X",int(clamp(c.x,0,1)*255+.5f),int(clamp(c.y,0,1)*255+.5f),int(clamp(c.z,0,1)*255+.5f));
+    action(label,hex,[&,label](){char initial[8];std::snprintf(initial,sizeof(initial),"%02X%02X%02X",int(c.x*255+.5f),int(c.y*255+.5f),int(c.z*255+.5f));std::string text=initial;
+     if(keyboard(label+" HEX RRGGBB",text)){if(text.size()==7&&text[0]=='#')text.erase(0,1);char* end=nullptr;unsigned long value=std::strtoul(text.c_str(),&end,16);
+      if(text.size()==6&&text.find_first_not_of("0123456789abcdefABCDEF")==std::string::npos&&*end=='\0'){c={float((value>>16)&255)/255,float((value>>8)&255)/255,float(value&255)/255};v.customGradient=true;changed=true;}else status="USE SIX HEX DIGITS RRGGBB";}
+    });
+   };
+   colorField("GRADIENT START",v.gradientLow);colorField("GRADIENT END",v.gradientHigh);
+   real("GRADIENT SCALE",v.gradientScale,.1f,.01f,100);real("GRADIENT OFFSET",v.gradientOffset,.05f,-100,100);boolean("REPEAT GRADIENT",v.gradientRepeat);
+   real("LIGHT YAW",v.lightYaw,.1f,-6.3f,6.3f);real("LIGHT PITCH",v.lightPitch,.1f,-1.5f,1.5f);real("EXPOSURE",v.exposure,.1f,.1f,4);
    real("SPECULAR",v.specular,.05f,0,1);real("FOG DENSITY",v.fog,.01f,0,1);
    real("CAMERA X",scene.camera.position.x,.1f,-10000,10000);real("CAMERA Y",scene.camera.position.y,.1f,-10000,10000);real("CAMERA Z",scene.camera.position.z,.1f,-10000,10000);
    real("CAMERA YAW",scene.camera.yaw,.1f,-6.3f,6.3f);real("CAMERA PITCH",scene.camera.pitch,.1f,-1.5f,1.5f);
@@ -153,6 +170,9 @@ int main(){
    });
    action("QUALITY RENDER","A START",[&](){scene.settings.quality=true;changed=true;status="QUALITY RENDER STARTED";});
    action("RENDER AGAIN","A RESTART",[&](){changed=true;});
+   action("RAYS / DE QUERIES",std::to_string(renderer.profile().rays)+" / "+std::to_string(renderer.profile().distanceQueries),[](){});
+   action("REUSED / BATCHES",std::to_string(renderer.profile().reused)+" / "+std::to_string(renderer.profile().batches),[](){});
+   action("RESET COUNTERS","A RESET",[&](){renderer.resetProfile();});
    action("CONTROLS","A HELP",[&](){status="PAD MOVE C-STICK LOOK ZL/ZR UP/DOWN";});
   }
   selected=std::max(0,std::min(selected,int(fields.size())-1));
@@ -177,10 +197,8 @@ int main(){
   if(changed){std::string error;if(!scene.formula.validate(error)){if(before)scene=*before;stageIndex=beforeStage;status=error;}}
   float newSlider=scene.settings.stereo?osGet3DSliderState():0;
   if(std::fabs(newSlider-slider)>.003f){slider=newSlider;changed=true;}
-  if(motion)renderer.invalidate(scene,true);
-  else if(wasMoving||changed)renderer.invalidate(scene,false);
-  wasMoving=motion;
-  Rays rays(scene);uint64_t start=osGetTime();
+  renderer.beginFrame(scene,motion,changed,slider);
+  Rays rays(scene);uint64_t start=osGetTime(),beforeRays=renderer.rays();
   while(!renderer.complete()){
    renderer.step(scene,rays,slider);
    if(float(osGetTime()-start)>=scene.settings.budgetMs)break;
@@ -189,10 +207,13 @@ int main(){
   // Fields are rebuilt next frame; do not dereference captures after a vector edit.
   std::vector<Row> rows;for(const Field& f:fields)rows.push_back(f.row);
   drawPanel(bottom,tab,selected,rows,status,presetIndex<0?"CUSTOM SCENE":presetName(presetIndex),renderer.currentBlock(),renderer.progress(scene),scene.settings.quality,workMs);
+  if(tab==4){Settings gradient=scene.settings;gradient.gradientScale=1;gradient.gradientOffset=0;gradient.gradientRepeat=false;
+   for(int x=0;x<300;++x){Vec c=gradientColor(gradient,float(x)/299);bottom.rect(10+x,67,1,3,{uint8_t(c.x*255),uint8_t(c.y*255),uint8_t(c.z*255)});}}
   blit(gfxGetFramebuffer(GFX_TOP,GFX_LEFT,nullptr,nullptr),renderer.image(0),W);
   blit(gfxGetFramebuffer(GFX_TOP,GFX_RIGHT,nullptr,nullptr),renderer.image(1),W);
   blit(gfxGetFramebuffer(GFX_BOTTOM,GFX_LEFT,nullptr,nullptr),bottom.pixels,320);
   gfxFlushBuffers();gfxSwapBuffers();gspWaitForVBlank();
+  renderer.endFrame(scene,float(osGetTime()-now),workMs,renderer.rays()-beforeRays);
  }
  worker.shutdown();gfxExit();return 0;
 }

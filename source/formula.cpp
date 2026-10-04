@@ -7,6 +7,9 @@ const char* kindName(Kind k){
  int n=int(k);return n>=0&&n<int(Kind::Count)?names[n]:"INVALID";
 }
 bool Stage::compile(std::string& error){
+ minimum2=a*a;fixed2=b*b;innerScale=fixed2/std::fmax(minimum2,1e-12f);
+ thetaPower=a*b;phiPower=a*c;stretch=a*std::fmax(1.f,std::fmax(std::fabs(b),std::fabs(c)));
+ integerPower=a>=1&&a<=16&&a==std::floor(a)?int(a)-1:-1;
  if(kind==Kind::Rotate){
   float ca=std::cos(a),sa=std::sin(a),cb=std::cos(b),sb=std::sin(b),cc=std::cos(c),sc=std::sin(c);
   rotation={{cc*cb,cc*sb*sa-sc*ca,cc*sb*ca+sc*sa,sc*cb,sc*sb*sa+cc*ca,sc*sb*ca-cc*sa,-sb,cb*sa,cb*ca}};
@@ -30,12 +33,13 @@ bool Formula::validate(std::string& error){
   if(!s.compile(error))return false;
  }
  if(!enabled){error="Enable at least one stage";return false;}
+ activeCount=0;for(size_t i=0;i<stages.size();++i)if(stages[i].enabled)active[activeCount++]=int(i);
  error.clear();return true;
 }
 namespace {
 Stage stage(Kind k,float a=0,float b=0,float c=0){Stage s;s.kind=k;s.a=a;s.b=b;s.c=c;return s;}
-float radialPower(float r,float p){
- if(p==std::floor(p)&&p>=0&&p<=15){int n=int(p);float out=1;while(n){if(n&1)out*=r;r*=r;n>>=1;}return out;}
+float radialPower(float r,float p,int n){
+ if(n>=0){float out=1;while(n){if(n&1)out*=r;r*=r;n>>=1;}return out;}
  return std::pow(r,p);
 }
 }
@@ -73,23 +77,23 @@ Formula preset(int n){
  }
  std::string error;f.validate(error);return f;
 }
-Sample distance(const Formula& f,Vec p){
+template<bool Trap> Sample evaluateDistance(const Formula& f,Vec p){
  Vec z=p,c=f.julia?f.constant:p;float dr=1,trap=1e6f,r=0;
  for(int i=0;i<f.iterations;++i){
   if(z.dot(z)>f.bailout*f.bailout)break;
-  for(const Stage& s:f.stages){if(!s.enabled)continue;
+  for(int stageIndex=0;stageIndex<f.activeCount;++stageIndex){const Stage& s=f.stages[f.active[stageIndex]];
    switch(s.kind){
     case Kind::BoxFold:{float limit=std::fabs(s.a);z={2*clamp(z.x,-limit,limit)-z.x,2*clamp(z.y,-limit,limit)-z.y,2*clamp(z.z,-limit,limit)-z.z};break;}
-    case Kind::SphereFold:{float r2=z.dot(z),min2=s.a*s.a,fixed2=s.b*s.b;
-     float k=r2<min2?fixed2/min2:r2<fixed2?fixed2/std::fmax(r2,1e-12f):1;
+    case Kind::SphereFold:{float r2=z.dot(z),min2=s.minimum2,fixed2=s.fixed2;
+     float k=r2<min2?s.innerScale:r2<fixed2?fixed2/std::fmax(r2,1e-12f):1;
      z=z*k;dr*=k;break;
     }
     case Kind::Bulb:{
      r=z.length();if(r<1e-12f){z={};dr=std::fmax(dr,1e-12f);break;}
-     float theta=std::acos(clamp(z.z/r,-1,1))*s.a*s.b,phi=std::atan2(z.y,z.x)*s.a*s.c;
-     float power=radialPower(r,s.a-1);
+     float theta=std::acos(clamp(z.z/r,-1,1))*s.thetaPower,phi=std::atan2(z.y,z.x)*s.phiPower;
+     float power=radialPower(r,s.a-1,s.integerPower);
      // Angular multipliers can stretch the transform beyond the standard bulb.
-     dr*=s.a*power*std::fmax(1.f,std::fmax(std::fabs(s.b),std::fabs(s.c)));
+     dr*=power*s.stretch;
      float nr=power*r,sinTheta=std::sin(theta);
      z={nr*sinTheta*std::cos(phi),nr*sinTheta*std::sin(phi),nr*std::cos(theta)};break;
     }
@@ -119,7 +123,7 @@ Sample distance(const Formula& f,Vec p){
     default:return {0,0,false};
    }
    if(!std::isfinite(z.x)||!std::isfinite(z.y)||!std::isfinite(z.z)||!std::isfinite(dr)||dr>1e30f)return {0,trap,false};
-   trap=std::fmin(trap,z.dot(z));
+   if constexpr(Trap)trap=std::fmin(trap,z.dot(z));
   }
  }
  r=z.length();float d=f.logarithmic?.5f*std::log(std::fmax(r,1e-12f))*r/std::fmax(dr,1e-12f):r/std::fmax(dr,1e-12f);
@@ -130,6 +134,8 @@ Sample distance(const Formula& f,Vec p){
   d=(std::fmax(-z.x-z.y-z.z,std::fmax(-z.x+z.y+z.z,std::fmax(z.x-z.y+z.z,z.x+z.y-z.z)))-f.terminalRadius)*.57735027f/std::fmax(dr,1e-12f);
  }
  d=std::fmax(0.f,d)/f.derivativeScale;
- return {d,std::sqrt(trap),std::isfinite(d)};
+ return {d,Trap?std::sqrt(trap):0.f,std::isfinite(d)};
 }
+Sample distance(const Formula& f,Vec p){return evaluateDistance<true>(f,p);}
+Sample distanceOnly(const Formula& f,Vec p){return evaluateDistance<false>(f,p);}
 }

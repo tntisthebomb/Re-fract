@@ -62,7 +62,22 @@ bool Expression::compile(const std::string& text,std::string& error){
   if(n<1){error="Invalid stack";return false;}if(n>max)max=n;
  }
  if(n!=1||max>32){error="Expression stack exceeds 32";return false;}
- p.out.stack=max;*this=p.out;error.clear();return true;
+ p.out.stack=max;
+ // Fold only finite, domain-valid constant subtrees. Invalid constants keep their
+ // original runtime error, and no variable-dependent identities are rewritten.
+ Expression folded;struct Node{int start;bool constant;};Node nodes[32];int top=0;
+ for(int i=0;i<p.out.count;++i){Instruction ins=p.out.code[i];int begin=folded.count;bool constant=ins.op==Op::Constant;
+  if(ins.op!=Op::Constant&&ins.op!=Op::Variable){bool binary=ins.op==Op::Add||ins.op==Op::Sub||ins.op==Op::Mul||ins.op==Op::Div||ins.op==Op::Pow||ins.op==Op::Min||ins.op==Op::Max;
+   Node right=nodes[--top];begin=right.start;constant=right.constant;
+   if(binary){Node left=nodes[--top];begin=left.start;constant=constant&&left.constant;}
+  }
+  folded.code[folded.count++]=ins;
+  if(constant&&ins.op!=Op::Constant){Expression subtree;subtree.count=folded.count-begin;for(int k=0;k<subtree.count;++k)subtree.code[k]=folded.code[begin+k];Dual value;
+   if(subtree.evaluate({}, {},value)){folded.count=begin;folded.code[folded.count++]={Op::Constant,value.value,0};}else constant=false;
+  }
+  nodes[top++]={begin,constant};
+ }
+ folded.stack=max;*this=folded;error.clear();return true;
 }
 bool Expression::evaluate(Vec z,Vec c,Dual& result)const{
  if(count<=0)return false;
@@ -81,7 +96,10 @@ bool Expression::evaluate(Vec z,Vec c,Dual& result)const{
     bool varying=false;for(float d:b.d)varying|=d!=0;
     if(av<=0&&(varying||std::floor(bv)!=bv))return false;
     if(av==0&&bv<1)return false;
-    a.value=std::pow(av,bv);da=bv==0?0:bv*std::pow(av,bv-1);db=av>0?a.value*std::log(av):0;break;
+    if(!varying&&bv==2){a.value=av*av;da=2*av;}
+    else if(!varying&&bv==3){a.value=av*av*av;da=3*av*av;}
+    else{a.value=std::pow(av,bv);da=bv==0?0:bv*std::pow(av,bv-1);}
+    db=varying&&av>0?a.value*std::log(av):0;break;
    }
    case Op::Min:case Op::Max:{bool useA=op==Op::Min?av<=bv:av>=bv;a.value=useA?av:bv;da=useA?1:0;db=useA?0:1;break;}
    case Op::Neg:a.value=-av;da=-1;break;

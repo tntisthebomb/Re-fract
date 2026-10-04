@@ -10,7 +10,7 @@ A customizable stereoscopic fractal laboratory for New Nintendo 3DS homebrew, wi
 - 4x/8x/16x coarse previews, interlaced cell scheduling, and progressive refinement to 400x240 per eye. Camera motion refreshes the coarse scan continuously; releasing controls restarts a clean refinement.
 - Optional full-resolution quality mode with doubled ray-step limit, tighter hit tolerance and 1/2/4 subpixel samples.
 - Configurable iterations, bailout, distance estimator, derivative scale, step safety, ray steps, lighting, ambient occlusion, shadows, palettes, fog, exposure, camera and stereo geometry.
-- New 3DS high-speed request and optional right-eye worker on CPU 2. If unavailable, it falls back to serial rendering. Parallel eye work is used at 4x or finer to avoid waking a worker for the smallest coarse jobs.
+- New 3DS high-speed request and optional CPU 2 worker. Batches split work in both mono and stereo modes, with automatic serial fallback. Batch size adapts to measured work cost.
 - Eight SD scene slots and PPM stereo-pair export. Saved scenes include custom expressions and all settings.
 
 ## Build / install
@@ -21,7 +21,7 @@ Install devkitPro's `3ds-dev` package (devkitARM, libctru and tools), then run:
 make -j2
 ```
 
-Copy `Re-fract.3dsx` and `Re-fract.smdh` into `sd:/3ds/Re-fract/` and launch through Homebrew Launcher on a homebrew-enabled console. The Actions **Build and test** workflow also builds a downloadable `Re-fract-3dsx` artifact when successful. The `Re-fract-3dsx-and-cia` Actions artifact also includes `Re-fract.cia` for installation on a homebrew-enabled New 3DS. Its HOME Menu banner is a textured 3D cube with an eight-second looping turn. The CIA requests New 3DS memory, 804 MHz CPU, L2 cache and access to CPU 2. Its application title ID is `000400000F7AC700`.
+Copy `Re-fract.3dsx` and `Re-fract.smdh` into `sd:/3ds/Re-fract/` and launch through Homebrew Launcher on a homebrew-enabled console. The Actions **Build and test** workflow also builds a downloadable `Re-fract-program` artifact when successful. The `Re-fract-3dsx-and-cia` Actions artifact also includes `Re-fract.cia` for installation on a homebrew-enabled New 3DS. Its HOME Menu banner is a textured 3D cube with an eight-second looping turn. The CIA requests New 3DS memory, 804 MHz CPU, L2 cache and access to CPU 2. Its application title ID is `000400000F7AC700`.
 
 ## Controls
 
@@ -46,6 +46,10 @@ Copy `Re-fract.3dsx` and `Re-fract.smdh` into `sd:/3ds/Re-fract/` and launch thr
 
 Selecting a preset loads its formula and starting camera. Rendering/material settings are retained except far clip and convergence, which fit the new view. Scene edits restart rendering. Moving immediately exits still quality mode so controls remain usable.
 
+**COLOR** contains named palettes, editable start/end colors (six hexadecimal RGB digits, e.g. FF8040), gradient scale/offset/repetition, a gradient preview strip, and lighting. Editing an endpoint enables the custom gradient. D-pad down scrolls through additional pages; the page count appears above the rows.
+
+**RENDER** includes surface-aware movement, enabled by default. Speed scales with the distance estimate at the camera, reaching full speed at SLOWDOWN DISTANCE. MIN SPEED FRACTION keeps movement possible on/inside a surface. The setting affects forward, sideways and vertical movement; look speed is unchanged. X multiplies the resulting speed. This is navigation assistance, not collision detection, and custom formula distance estimates may be conservative or inaccurate.
+
 **FORMULA** edits global iteration settings and adds stages. **STAGE** edits the selected stage, changes its operation, reorders, duplicates or deletes it. Changing an operation resets its parameters to useful defaults. **FILES** saves/loads `scene-0.rfs` through `scene-7.rfs` in `sd:/3ds/Re-fract/`; saving replaces that slot. Export replaces `image-N-left.ppm` and `image-N-right.ppm`. An export made before rendering completes contains the current partial frame.
 
 ## Presets and expressions
@@ -54,9 +58,11 @@ See [formula reference](docs/FORMULAS.md) for exact controls and expression synt
 
 ## Performance and validation
 
-This is a CPU distance-estimation ray marcher. Specialized built-in operations avoid the expression VM. Rotation matrices and camera basis are precomputed, integer bulb powers use multiplication, orbit traps and bailout checks use squared lengths, and normals use four distance evaluations. Retained image buffers allow partial updates without retracing untouched cells. Formula code and evaluation stacks have fixed limits; there is no expression parsing in the ray loop.
+This is a CPU distance-estimation ray marcher. Specialized built-in operations avoid the expression VM. Active stages, sphere-fold constants, angular multipliers, rotation matrices and camera basis are precomputed, integer bulb powers use multiplication, orbit traps and bailout checks use squared lengths, and normals use four distance evaluations. Retained image buffers allow partial updates without retracing untouched cells. Geometry-only distance queries skip orbit coloring; coloring is evaluated at the hit. Constant expression subtrees are folded at compile time. Formula code and evaluation stacks have fixed limits; there is no expression parsing in the ray loop.
 
-The render budget is **soft**: input is checked between stereo cells, and an expensive cell can exceed the selected budget. Custom expressions, high iteration counts, AO, shadow rays and supersampling cost significantly more. Interlacing lowers work per update but does not reduce the work required for a finished image. There is no promised frame rate; actual New 3DS timings must be measured on hardware. Old 3DS falls back to a 16x preview and serial rendering.
+See [optimization controls and limitations](docs/PERFORMANCE.md). Moving previews can use cheaper orbit coloring without normal, AO or shadow queries. Experimental reprojection, cross-eye reuse, adaptive tiles, fixed center detail and relaxed marching are individually configurable and default off. Quality mode disables all of these approximations. The target refresh rate guides adaptive block size; it does not guarantee that rate.
+
+The render budget is **soft**: input is checked between bounded batches, and an expensive batch can exceed the selected budget. Custom expressions, high iteration counts, AO, shadow rays and supersampling cost significantly more. Interlacing lowers work per update but does not reduce the work required for a finished image. There is no promised frame rate; actual New 3DS timings must be measured on hardware. Old 3DS falls back to a 16x preview and serial rendering.
 
 Desktop tests cover expression parsing/derivatives/domain errors, every preset's finite distance samples, scene serialization and failed-load isolation, stereo convergence, genuine eye differences, zero-slider identity and refinement completion. Run:
 
