@@ -1,5 +1,7 @@
 #include "engine.hpp"
 #include "ui.hpp"
+#include "batch_queue.hpp"
+#include <thread>
 #include <iostream>
 #include <fstream>
 #include <cstdlib>
@@ -114,6 +116,12 @@ int main(int argc,char** argv){
  auto rev=monoEnabled.imageRevision();monoEnabled.beginFrame(s,false,false,0);monoEnabled.step(s,rays,0);
  check(monoEnabled.complete()&&monoEnabled.imageRevision()==rev,"inactive slider leaves completed render untouched");
  check(&monoEnabled.image(0)==&monoEnabled.image(1),"mono export shares image without duplicate writes");
+ // Exercise the exact native work-claim algorithm with real concurrent consumers.
+ s=Scene{};rays=Rays(s);RenderJob queueJobs[32];RenderResult serialResults[32],parallelResults[32];
+ for(int i=0;i<32;++i)queueJobs[i]={i*12,110,8,i%2,(i%2?1.f:-1.f)*.03f,false};
+ renderJobs(s,rays,queueJobs,serialResults,32);BatchQueue queue;
+ for(int repeat=0;repeat<12;++repeat){queue.reset(s,rays,queueJobs,parallelResults,32);std::thread workerThread([&](){queue.consume();});queue.consume();workerThread.join();
+  for(int i=0;i<32;++i){const auto& a=serialResults[i];const auto& b=parallelResults[i];check(a.color.r==b.color.r&&a.color.g==b.color.g&&a.color.b==b.color.b&&a.hit==b.hit&&near(a.depth,b.depth,1e-6f)&&a.profile.distanceQueries==b.profile.distanceQueries,"shared queue matches serial ray results");}}
  if(argc>1){
   std::string prefix=argv[1];s=Scene{};s.settings.previewBlock=4;s.settings.autoRefine=false;
   for(int n=0;n<PresetCount;++n){s.formula=preset(n);s.camera=presetCamera(n);s.settings.farClip=40;s.settings.convergence=-s.camera.position.z;rays=Rays(s);renderer.invalidate(s,false);

@@ -10,7 +10,7 @@ A customizable stereoscopic fractal laboratory for New Nintendo 3DS homebrew, wi
 - 4x/8x/16x coarse previews, interlaced cell scheduling, and progressive refinement to 400x240 per eye. Camera motion refreshes the coarse scan continuously; releasing controls restarts a clean refinement.
 - Optional full-resolution quality mode with doubled ray-step limit, tighter hit tolerance and 1/2/4 subpixel samples.
 - Configurable iterations, bailout, distance estimator, derivative scale, step safety, ray steps, lighting, ambient occlusion, shadows, palettes, fog, exposure, camera and stereo geometry.
-- New 3DS high-speed request and optional CPU 2 worker. Batches split work in both mono and stereo modes, with automatic serial fallback. Batch size adapts to measured work cost.
+- New 3DS high-speed request and optional CPU 2 worker. Both CPUs claim jobs from a shared queue in mono and stereo modes, with automatic serial fallback. Batch size adapts to measured work cost.
 - Eight SD scene slots and PPM stereo-pair export. Saved scenes include custom expressions and all settings.
 
 ## Build / install
@@ -78,7 +78,7 @@ Without CMake:
 
 ```sh
 mkdir -p host-build
-g++ -std=c++17 -O2 -Wall -Wextra -Werror -Iinclude source/expression.cpp source/formula.cpp source/renderer.cpp source/storage.cpp source/ui.cpp tests/core.cpp -o host-build/core_tests
+g++ -pthread -std=c++17 -O2 -Wall -Wextra -Werror -Iinclude source/expression.cpp source/formula.cpp source/renderer.cpp source/storage.cpp source/ui.cpp tests/core.cpp -o host-build/core_tests
 ./host-build/core_tests
 ```
 

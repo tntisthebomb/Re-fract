@@ -1,18 +1,17 @@
 #pragma once
 #include <3ds.h>
 #include <atomic>
-#include "engine.hpp"
+#include "batch_queue.hpp"
 namespace rf {
-// Jobs/results occupy disjoint ranges; the main thread alone writes image buffers.
+// Both CPUs claim independent jobs; only the main thread writes image buffers.
 class StereoWorker {
  Thread thread=nullptr;LightEvent request,finished;
  std::atomic<bool> stop{false},pending{false},ready{false};
- const Scene* scene=nullptr;const Rays* rays=nullptr;
- const RenderJob* jobs=nullptr;RenderResult* results=nullptr;int count=0;
+ BatchQueue queue;
  static void run(void* arg){auto& w=*static_cast<StereoWorker*>(arg);
   for(;;){LightEvent_Wait(&w.request);if(w.stop.load(std::memory_order_acquire))break;
    if(!w.pending.exchange(false,std::memory_order_acquire))continue;
-   renderJobs(*w.scene,*w.rays,w.jobs,w.results,w.count);
+   w.queue.consume();
    w.ready.store(true,std::memory_order_release);LightEvent_Signal(&w.finished);
   }
  }
@@ -22,10 +21,9 @@ class StereoWorker {
  void shutdown(){if(thread){stop.store(true,std::memory_order_release);LightEvent_Signal(&request);threadJoin(thread,U64_MAX);threadFree(thread);thread=nullptr;}}
  ~StereoWorker(){shutdown();}
  static void shade(const Scene& s,const Rays& r,const RenderJob* jobs,RenderResult* results,int count,void* arg){
-  auto& w=*static_cast<StereoWorker*>(arg);int split=count/2;
-  w.scene=&s;w.rays=&r;w.jobs=jobs+split;w.results=results+split;w.count=count-split;
+  auto& w=*static_cast<StereoWorker*>(arg);w.queue.reset(s,r,jobs,results,count);
   w.ready.store(false,std::memory_order_relaxed);w.pending.store(true,std::memory_order_release);LightEvent_Signal(&w.request);
-  renderJobs(s,r,jobs,results,split);LightEvent_Wait(&w.finished);
+  w.queue.consume();LightEvent_Wait(&w.finished);
   // Acquire publishes all results written by the worker before returning.
   while(!w.ready.load(std::memory_order_acquire)){}
  }

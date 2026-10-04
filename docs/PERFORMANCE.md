@@ -1,6 +1,6 @@
 # Performance controls
 
-The renderer is CPU based. The New 3DS worker handles half a batch rather than waking once per stereo cell. Mono rendering can use both CPUs too. Results are joined before scene edits or image writes. Formula edits rebuild cached constants and the enabled-stage list. Geometry queries omit orbit-trap calculations; one coloring query is made at a hit. Custom expressions fold finite constant subexpressions, preserving invalid-domain errors.
+The renderer is CPU based. The New 3DS CPUs consume a shared queue within each batch rather than waking once per stereo cell. A core finishing a cheap ray can immediately claim another, avoiding the fixed half-batch split when ray costs differ. Mono rendering can use both CPUs too. Results are joined before scene edits or image writes. Formula edits rebuild cached constants and the enabled-stage list. Geometry queries omit orbit-trap calculations; one coloring query is made at a hit. Custom expressions fold finite constant subexpressions, preserving invalid-domain errors.
 
 ## Stereo slider and image transfer
 
@@ -38,3 +38,15 @@ Mono exports share the same retained image rather than copying every rendered pi
 GPU mesh extraction/caching and GPU-based stereo warping are not implemented. They require a separate geometry/rasterization path and hardware profiling; this update does not claim GPU ray marching or compute shaders.
 
 Scene format v2 saves the new settings and still reads v1 scenes. Older application builds cannot read v2 saves.
+
+## GPU opportunities
+
+The current application still evaluates fractal geometry on the CPU. PICA200 has programmable vertex/geometry processing and a configurable, non-programmable fragment stage. A conventional per-pixel distance-estimator ray-marching shader is therefore unavailable.
+
+Potential additional backends, not implemented in this build:
+
+- **Cached surface mesh**: sample/extract geometry on CPU, then use the GPU for stereo projection, triangles, depth testing, and lighting. Camera movement over cached geometry can avoid most repeated fractal evaluation. Formula edits and exploration outside the cache rebuild it; finite mesh resolution loses small detail.
+- **Depth-image mesh**: triangulate recent CPU surface samples and render them from each eye. Cheaper than extracting a volume, but hidden surfaces need fresh rays, and depth discontinuities need explicit triangle rejection.
+- **Preview scaling and UI drawing**: render fewer CPU samples, upload a texture, and let the GPU enlarge/filter and composite it. This saves transfer/compositing work; it does not make each fractal evaluation cheaper. Upload and synchronization costs need hardware measurement.
+
+Primary references: [3DS fragment pipeline](https://3dbrew.org/wiki/Nintendo_OpenGL), [devkitPro textured GPU example](https://github.com/devkitPro/3ds-examples/blob/master/graphics/gpu/textured_cube/source/main.c).
