@@ -1,0 +1,11 @@
+/build/
+/host-build/
+*.o
+*.elf
+*.3dsx
+*.smdh
+*.map
+*.ppm
+*.tmp
+test.rfs
+bad.rfs

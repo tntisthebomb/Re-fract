@@ -1,0 +1,34 @@
+name: Build and test
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Portable core tests
+        run: |
+          cmake -S . -B host-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build host-build -j2
+          ctest --test-dir host-build --output-on-failure
+      - name: Address and undefined behavior sanitizers
+        run: |
+          g++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Werror -Iinclude source/expression.cpp source/formula.cpp source/renderer.cpp source/storage.cpp source/ui.cpp tests/core.cpp -o host-build/sanitized
+          ./host-build/sanitized
+  new3ds:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install 3DS libraries
+        run: dkp-pacman -S --needed --noconfirm 3ds-dev
+      - name: Build homebrew
+        run: make -j2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Re-fract-3dsx
+          path: |
+            Re-fract.3dsx
+            Re-fract.smdh
+          if-no-files-found: error
