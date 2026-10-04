@@ -204,6 +204,7 @@ int main(){
     if(row<int(fields.size())){selected=row;if(touch.px<45)repeat|=KEY_DLEFT;else if(touch.px>280)repeat|=KEY_DRIGHT;else activate=true;}
    }
   }
+  bool materialEditOnly=!changed;
   if((repeat&(KEY_DLEFT|KEY_DRIGHT))||activate){before.reset(new Scene(scene));menuDirty=true;}
   if((repeat&KEY_DLEFT)&&fields[selected].adjust)fields[selected].adjust(-1);
   if((repeat&KEY_DRIGHT)&&fields[selected].adjust)fields[selected].adjust(1);
@@ -217,7 +218,7 @@ int main(){
   bool activeStereo=slider>0;
   if(activeStereo!=displayStereo){topCopies[0].reset();topCopies[1].reset();displayStereo=activeStereo;}
   gfxSet3D(activeStereo);
-  if(changed&&before&&tab==4&&!motion&&now>=sliderUntil&&!sliderChanged){
+  if(changed&&materialEditOnly&&before&&tab==4&&!motion&&now>=sliderUntil&&!sliderChanged){
    const std::string& label=fields[selected].row.label;
    bool material=label=="PALETTE"||label=="CUSTOM GRADIENT"||label=="GRADIENT START"||label=="GRADIENT END"||label=="GRADIENT SCALE"||label=="GRADIENT OFFSET"||label=="REPEAT GRADIENT"||label=="EXPOSURE"||label=="FOG DENSITY";
    if(material&&renderer.recolor(scene)){changed=false;status="COLOR UPDATED / GEOMETRY REUSED";}
