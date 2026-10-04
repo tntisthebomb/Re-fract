@@ -99,6 +99,21 @@ int main(int argc,char** argv){
  renderer.resetProfile();renderer.beginFrame(s,true,true,1);renderer.step(s,rays,1);check(renderer.profile().reused==0,"scene changes invalidate history");
  s.settings.quality=true;s.settings.adaptiveTiles=true;s.settings.foveated=true;s.settings.relaxation=1.5f;
  renderer.resetProfile();renderer.beginFrame(s,false,true,1);renderer.step(s,Rays(s),1);check(renderer.profile().reused==0&&renderer.profile().skipped==0&&renderer.profile().relaxFallbacks==0,"quality bypasses experiments");
+ StereoSlider sliderState;Settings stereoSettings;
+ check(!sliderState.update(stereoSettings,0)&&sliderState.strength==0,"physical 2D stop stays mono");
+ check(!sliderState.update(stereoSettings,.018f)&&sliderState.strength==0,"slider noise near 2D ignored");
+ check(sliderState.update(stereoSettings,.1f)&&sliderState.strength>0,"slider activates stereo beyond dead zone");
+ float stable=sliderState.strength;check(!sliderState.update(stereoSettings,stable+.005f)&&sliderState.strength==stable,"minor slider jitter does not reset view");
+ check(sliderState.update(stereoSettings,0)&&sliderState.strength==0,"slider returns to mono");
+ stereoSettings.stereo=false;check(!sliderState.update(stereoSettings,1)&&sliderState.strength==0,"disabled stereo ignores slider");
+ stereoSettings.stereo=true;stereoSettings.eyeSeparation=0;check(!sliderState.update(stereoSettings,1),"zero separation ignores slider");
+ s=Scene{};s.settings.previewBlock=16;s.settings.autoRefine=false;rays=Rays(s);Renderer monoEnabled,monoDisabled;
+ monoEnabled.beginFrame(s,false,true,0);while(!monoEnabled.complete())monoEnabled.step(s,rays,0);
+ s.settings.stereo=false;monoDisabled.beginFrame(s,false,true,0);while(!monoDisabled.complete())monoDisabled.step(s,rays,0);
+ check(monoEnabled.rays()==375&&monoEnabled.rays()==monoDisabled.rays()&&monoEnabled.profile().batches==monoDisabled.profile().batches,"stereo enabled at 2D has same render work as disabled");
+ auto rev=monoEnabled.imageRevision();monoEnabled.beginFrame(s,false,false,0);monoEnabled.step(s,rays,0);
+ check(monoEnabled.complete()&&monoEnabled.imageRevision()==rev,"inactive slider leaves completed render untouched");
+ check(&monoEnabled.image(0)==&monoEnabled.image(1),"mono export shares image without duplicate writes");
  if(argc>1){
   std::string prefix=argv[1];s=Scene{};s.settings.previewBlock=4;s.settings.autoRefine=false;
   for(int n=0;n<PresetCount;++n){s.formula=preset(n);s.camera=presetCamera(n);s.settings.farClip=40;s.settings.convergence=-s.camera.position.z;rays=Rays(s);renderer.invalidate(s,false);

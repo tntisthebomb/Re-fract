@@ -59,6 +59,15 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  float fog=std::exp(-t*o.fog);color=(color*fog+background*(1-fog))*o.exposure;
  return finish(quantize(color));
 }
+bool StereoSlider::update(const Settings& s,float raw){
+ float previous=strength;raw=std::isfinite(raw)?clamp(raw,0,1):0;
+ if(!s.stereo||s.eyeSeparation<=0){active=false;strength=0;}
+ else{if(raw<=.02f)active=false;else if(raw>=.04f)active=true;
+  if(!active)strength=0;
+  else if(strength==0||std::fabs(raw-strength)>.02f)strength=std::round(raw*32)/32;
+ }
+ return strength!=previous;
+}
 float cameraSpeedScale(const Scene& s){
  if(!s.camera.surfaceSpeed)return 1;
  Sample d=distanceOnly(s.formula,s.camera.position);
@@ -107,8 +116,9 @@ void Renderer::invalidate(const Scene& s,bool motion,bool clearHistory){
  if(clearHistory){historyCount=historyCursor=0;for(auto& a:ages)std::fill(a.begin(),a.end(),0);}
 }
 void Renderer::reproject(const Scene& s,const Rays& r,float slider){
+ ++revision;
  for(int e=0;e<2;++e){std::fill(pixels[e].begin(),pixels[e].end(),Color{6,7,6});std::fill(depths[e].begin(),depths[e].end(),0);std::fill(ages[e].begin(),ages[e].end(),0);}
- int eyes=s.settings.stereo&&slider>.001f?2:1;
+ int eyes=s.settings.stereo&&slider>.001f&&s.settings.eyeSeparation>0?2:1;
  for(size_t i=0;i<historyCount;++i){const auto& h=history[i];if(frame-h.stamp>uint32_t(s.settings.historyFrames))continue;
   for(int e=0;e<eyes;++e){if(e!=h.eye&&!s.settings.stereoReuse)continue;float x,y,d,offset=eyes==2?(e?1.f:-1.f)*s.settings.eyeSeparation*slider*.5f:0;
    if(!r.project(s,h.point,offset,x,y,d))continue;
@@ -118,10 +128,14 @@ void Renderer::reproject(const Scene& s,const Rays& r,float slider){
    }
   }
  }
- if(eyes==1)pixels[1]=pixels[0];
+
 }
 void Renderer::beginFrame(const Scene& s,bool motion,bool changed,float slider){
- ++frame;if(changed){dynamicBlock=s.settings.previewBlock;invalidate(s,motion,true);}
+ ++frame;int eyes=s.settings.stereo&&slider>.001f&&s.settings.eyeSeparation>0?2:1;
+ float offset=eyes==2?s.settings.eyeSeparation*slider*.5f:0;
+ if(eyes!=activeEyes||offset!=eyeOffset){historyCount=historyCursor=0;for(auto& a:ages)std::fill(a.begin(),a.end(),0);}
+ activeEyes=eyes;eyeOffset=offset;
+ if(changed){dynamicBlock=s.settings.previewBlock;invalidate(s,motion,true);}
  else if(motion||moving)invalidate(s,motion,false);
  if(motion&&s.settings.temporal&&!s.settings.quality)reproject(s,Rays(s),slider);
 }
@@ -129,7 +143,7 @@ void Renderer::endFrame(const Scene& s,float totalMs,float renderMs,uint64_t job
  frameMs=totalMs;if(jobs){float cost=renderMs/jobs;averageJobMs=averageJobMs==0?cost:averageJobMs*.8f+cost*.2f;}
  batchLimit=std::max(1,std::min(s.settings.batchSize,int(s.settings.budgetMs*.5f/std::max(.001f,averageJobMs))));
  if(moving&&s.settings.adaptiveResolution&&frame%15==0){float target=1000.f/s.settings.targetFps;
- float estimate=averageJobMs*((W+dynamicBlock-1)/dynamicBlock)*((H+dynamicBlock-1)/dynamicBlock)*(s.settings.stereo?2:1);
+ float estimate=averageJobMs*((W+dynamicBlock-1)/dynamicBlock)*((H+dynamicBlock-1)/dynamicBlock)*activeEyes;
  if(estimate>target*2)dynamicBlock=std::min(32,dynamicBlock*2);
  else if(estimate*4<target*1.4f)dynamicBlock=std::max(4,dynamicBlock/2);}
 }
@@ -146,7 +160,7 @@ bool Renderer::skipCell(const Scene& s,int x,int y,int eye,int cell){
 }
 void Renderer::step(const Scene& s,const Rays& rays,float slider){
  if(done)return;
- const auto& o=s.settings;bool stereo=o.stereo&&slider>.001f;int eyes=stereo?2:1;
+ const auto& o=s.settings;bool stereo=o.stereo&&slider>.001f&&o.eyeSeparation>0;int eyes=stereo?2:1;activeEyes=eyes;
  RenderJob jobs[32];RenderResult results[32];int count=0,limit=std::min(32,std::max(eyes,std::min(o.batchSize,batchLimit)));
  int nx=(W+block-1)/block,total=nx*((H+block-1)/block),lanes=std::min(o.interlace,total),scan=0;
  while(count+eyes<=limit&&scan++<32){int cell=lane+index*lanes;
@@ -160,9 +174,9 @@ void Renderer::step(const Scene& s,const Rays& rays,float slider){
  }
  if(!count)return;
  if(batchShader&&o.parallel&&count>1)batchShader(s,rays,jobs,results,count,shaderContext);else renderJobs(s,rays,jobs,results,count);
- ++totals.batches;
+ ++totals.batches;++revision;
  for(int i=0;i<count;++i){const auto& j=jobs[i];const auto& r=results[i];totals.add(r.profile);rayCount+=r.profile.rays;
-  for(int yy=j.y;yy<std::min(j.y+j.block,H);++yy)for(int xx=j.x;xx<std::min(j.x+j.block,W);++xx){int k=yy*W+xx;pixels[j.eye][k]=r.color;depths[j.eye][k]=r.depth;ages[j.eye][k]=0;if(!stereo)pixels[1][k]=r.color;}
+  for(int yy=j.y;yy<std::min(j.y+j.block,H);++yy)for(int xx=j.x;xx<std::min(j.x+j.block,W);++xx){int k=yy*W+xx;pixels[j.eye][k]=r.color;depths[j.eye][k]=r.depth;ages[j.eye][k]=0;}
   if(r.hit&&o.temporal){history[historyCursor]={r.point,r.color,r.depth*rays.tangent*j.block/H,frame,j.eye};historyCursor=(historyCursor+1)%history.size();historyCount=std::min(history.size(),historyCount+1);}
  }
 }

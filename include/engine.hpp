@@ -74,6 +74,10 @@ Camera presetCamera(int index);
 struct Scene {Formula formula=preset(0);Settings settings;Camera camera;};
 float cameraSpeedScale(const Scene& s);
 Vec gradientColor(const Settings& s,float trap);
+struct StereoSlider {
+ float strength=0;bool active=false;
+ bool update(const Settings& settings,float raw);
+};
 struct Rays {
  Vec forward,right,up,light;float tangent=1;
  explicit Rays(const Scene& s);
@@ -98,10 +102,11 @@ class Renderer {
  std::array<std::vector<uint8_t>,2> ages;
  struct History {Vec point;Color color;float footprint=0;uint32_t stamp=0;int eye=0;};
  std::array<History,8192> history{};size_t historyCount=0,historyCursor=0;
- uint32_t frame=0;int dynamicBlock=8,batchLimit=8;
+ uint32_t frame=0;int dynamicBlock=8,batchLimit=8,activeEyes=1;
+ float eyeOffset=0;
  float averageJobMs=0,frameMs=0;Profile totals;
  int block=8,lane=0,index=0;bool moving=false,done=false;
- uint64_t rayCount=0;
+ uint64_t rayCount=0,revision=1;
  BatchShader batchShader=nullptr;void* shaderContext=nullptr;
  void reproject(const Scene& s,const Rays& rays,float slider);
  bool skipCell(const Scene& s,int x,int y,int eye,int cell);
@@ -113,10 +118,11 @@ class Renderer {
  void endFrame(const Scene& s,float totalMs,float renderMs,uint64_t jobs);
  // A bounded batch can be split between cores in mono and stereo modes.
  void step(const Scene& s,const Rays& rays,float slider);
- const std::vector<Color>& image(int eye)const{return pixels[eye];}
+ const std::vector<Color>& image(int eye)const{return pixels[activeEyes==1?0:eye];}
  bool complete()const{return done;}
  int currentBlock()const{return block;}
  uint64_t rays()const{return rayCount;}
+ uint64_t imageRevision()const{return revision;}
  const Profile& profile()const{return totals;}
  void resetProfile(){totals={};}
  int previewSize()const{return dynamicBlock;}

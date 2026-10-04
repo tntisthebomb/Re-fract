@@ -27,6 +27,14 @@ void blit(u8* frame,const std::vector<Color>& pixels,int width){
   frame[i]=c.b;frame[i+1]=c.g;frame[i+2]=c.r;
  }
 }
+struct FrameCopyCache {
+ u8* addresses[2]={nullptr,nullptr};uint64_t revisions[2]={0,0};bool valid[2]={false,false};
+ void copy(u8* address,const std::vector<Color>& pixels,uint64_t revision){
+  int slot=address==addresses[0]?0:address==addresses[1]?1:addresses[0]==nullptr?0:1;
+  if(!valid[slot]||addresses[slot]!=address||revisions[slot]!=revision){blit(address,pixels,W);addresses[slot]=address;revisions[slot]=revision;valid[slot]=true;}
+ }
+ void reset(){valid[0]=valid[1]=false;}
+};
 Stage newStage(Kind kind){Stage s;s.kind=kind;s.a=0;s.b=0;s.c=0;
  if(kind==Kind::BoxFold)s.a=1;
  if(kind==Kind::SphereFold){s.a=.5f;s.b=1;}
@@ -37,14 +45,15 @@ Stage newStage(Kind kind){Stage s;s.kind=kind;s.a=0;s.b=0;s.c=0;
 }
 }
 int main(){
- gfxInitDefault();gfxSet3D(true);osSetSpeedupEnable(true);
+ gfxInitDefault();gfxSet3D(false);osSetSpeedupEnable(true);
+ FrameCopyCache topCopies[2];bool displayStereo=false;
  bool new3ds=false;APT_CheckNew3DS(&new3ds);
  mkdir("sdmc:/3ds",0777);mkdir("sdmc:/3ds/Re-fract",0777);
  auto sceneOwner=std::make_unique<Scene>();auto rendererOwner=std::make_unique<Renderer>();
  Scene& scene=*sceneOwner;Renderer& renderer=*rendererOwner;Canvas bottom(320,240);
  StereoWorker worker(new3ds);
  if(worker.available())renderer.setBatchShader(StereoWorker::shade,&worker);
- int tab=0,selected=0,presetIndex=0,stageIndex=0,slot=0;float slider=0,workMs=0;
+ int tab=0,selected=0,presetIndex=0,stageIndex=0,slot=0;float slider=0,workMs=0;StereoSlider sliderControl;uint64_t sliderUntil=0;
  std::string status=worker.available()?"NEW 3DS / TWO CPU BATCHES":new3ds?"NEW 3DS / SINGLE CPU FALLBACK":"OLD 3DS / USE 16X PREVIEW";
  if(!new3ds){scene.settings.previewBlock=16;scene.settings.budgetMs=5;}
  renderer.invalidate(scene,false);
@@ -195,9 +204,15 @@ int main(){
   if((repeat&KEY_DRIGHT)&&fields[selected].adjust)fields[selected].adjust(1);
   if(activate&&fields[selected].activate)fields[selected].activate();
   if(changed){std::string error;if(!scene.formula.validate(error)){if(before)scene=*before;stageIndex=beforeStage;status=error;}}
-  float newSlider=scene.settings.stereo?osGet3DSliderState():0;
-  if(std::fabs(newSlider-slider)>.003f){slider=newSlider;changed=true;}
-  renderer.beginFrame(scene,motion,changed,slider);
+  float previousSlider=slider;
+  bool sliderChanged=sliderControl.update(scene.settings,osGet3DSliderState());slider=sliderControl.strength;
+  if(sliderChanged)sliderUntil=now+250;
+  // Enabling stereo at the physical 2D stop does not alter any camera ray.
+  if(changed&&before&&fields[selected].row.label=="STEREO"&&previousSlider==0&&slider==0)changed=false;
+  bool activeStereo=slider>0;
+  if(activeStereo!=displayStereo){topCopies[0].reset();topCopies[1].reset();displayStereo=activeStereo;}
+  gfxSet3D(activeStereo);
+  renderer.beginFrame(scene,motion||now<sliderUntil,changed,slider);
   Rays rays(scene);uint64_t start=osGetTime(),beforeRays=renderer.rays();
   while(!renderer.complete()){
    renderer.step(scene,rays,slider);
@@ -209,8 +224,8 @@ int main(){
   drawPanel(bottom,tab,selected,rows,status,presetIndex<0?"CUSTOM SCENE":presetName(presetIndex),renderer.currentBlock(),renderer.progress(scene),scene.settings.quality,workMs);
   if(tab==4){Settings gradient=scene.settings;gradient.gradientScale=1;gradient.gradientOffset=0;gradient.gradientRepeat=false;
    for(int x=0;x<300;++x){Vec c=gradientColor(gradient,float(x)/299);bottom.rect(10+x,67,1,3,{uint8_t(c.x*255),uint8_t(c.y*255),uint8_t(c.z*255)});}}
-  blit(gfxGetFramebuffer(GFX_TOP,GFX_LEFT,nullptr,nullptr),renderer.image(0),W);
-  blit(gfxGetFramebuffer(GFX_TOP,GFX_RIGHT,nullptr,nullptr),renderer.image(1),W);
+  topCopies[0].copy(gfxGetFramebuffer(GFX_TOP,GFX_LEFT,nullptr,nullptr),renderer.image(0),renderer.imageRevision());
+  if(activeStereo)topCopies[1].copy(gfxGetFramebuffer(GFX_TOP,GFX_RIGHT,nullptr,nullptr),renderer.image(1),renderer.imageRevision());
   blit(gfxGetFramebuffer(GFX_BOTTOM,GFX_LEFT,nullptr,nullptr),bottom.pixels,320);
   gfxFlushBuffers();gfxSwapBuffers();gspWaitForVBlank();
   renderer.endFrame(scene,float(osGetTime()-now),workMs,renderer.rays()-beforeRays);
