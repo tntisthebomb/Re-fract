@@ -18,3 +18,6 @@ target_link_libraries(bulb_benchmark PRIVATE refract_core)
 
 add_executable(experiment_benchmark tests/experiment_benchmark.cpp)
 target_link_libraries(experiment_benchmark PRIVATE refract_core)
+
+add_executable(optics_preview tests/optics_preview.cpp)
+target_link_libraries(optics_preview PRIVATE refract_core)

@@ -62,7 +62,7 @@ int main(){
  std::shared_ptr<DistanceField> distanceField;std::unique_ptr<Scene> detailScene;std::unique_ptr<TraceBenchmark> benchmark;bool benchmarkActive=false;
  GpuSurface gpuSurface;bool meshNavigation=false,captureRequested=false;bool refreshPending=false;
  if(worker.available()){renderer.setBatchShader(StereoWorker::shade,&worker);renderer.setParallelFor(StereoWorker::parallelFor,&worker);}
- int tab=0,selected=0,presetIndex=0,stageIndex=0,slot=0;float slider=0,workMs=0;StereoSlider sliderControl;uint64_t sliderUntil=0;
+ int tab=0,selected=0,presetIndex=0,stageIndex=0,slot=0,lightIndex=0;float slider=0,workMs=0;StereoSlider sliderControl;uint64_t sliderUntil=0;
  std::string status=worker.available()?"NEW 3DS / TWO CPU BATCHES":new3ds?"NEW 3DS / SINGLE CPU FALLBACK":"OLD 3DS / USE 16X PREVIEW";
  if(!new3ds){scene.settings.previewBlock=16;scene.settings.budgetMs=5;}
  renderer.invalidate(scene,false);
@@ -119,6 +119,8 @@ int main(){
    boolean("QUALITY MODE",v.quality);choice("PREVIEW BLOCK",v.previewBlock,{4,8,16});integer("INTERLACE LANES",v.interlace,1,1,8);
    integer("RAY STEPS",v.steps,8,8,256);real("HIT EPSILON",v.epsilon,.0005f,.000001f,.05f);boolean("ZOOM PRECISION EXP",v.adaptivePrecision);real("MIN HIT EPSILON",v.minEpsilon,.000001f,.000001f,.001f);real("PIXEL TOLERANCE",v.pixelTolerance,.05f,.05f,2);real("STEP SAFETY",v.safety,.05f,.05f,1);
    real("FAR CLIP",v.farClip,1,1,100);real("FRAME BUDGET MS",v.budgetMs,1,1,20);boolean("AUTO REFINE",v.autoRefine);boolean("ADAPT DETAIL EXP",v.adaptiveDetail);integer("MOVE ITERATIONS",v.previewIterations,1,1,32);integer("DETAIL ITERATION CAP",v.detailIterations,1,1,32);
+   boolean("DEPTH OF FIELD",v.dof);real("LENS APERTURE",v.aperture,.01f,0,1);real("FOCUS DISTANCE",v.focusDistance,.1f,.001f,100);choice("LENS SAMPLES",v.dofSamples,{1,2,4,8,16});
+   action("FOCUS AT CONVERGENCE","A MATCH DISTANCE",[&](){v.focusDistance=v.convergence;changed=true;});
    choice("QUALITY SAMPLES",v.samples,{1,2,4});integer("AO SAMPLES",v.ao,1,0,6);integer("SHADOW STEPS",v.shadow,4,0,64);
    boolean("STEREO",v.stereo);real("EYE SEPARATION",v.eyeSeparation,.005f,0,.2f);real("CONVERGENCE",v.convergence,.2f,.2f,30);
    boolean("PARALLEL BATCHES",v.parallel);
@@ -176,12 +178,20 @@ int main(){
    auto colorField=[&](std::string label,Vec& c){char hex[8];std::snprintf(hex,sizeof(hex),"%02X%02X%02X",int(clamp(c.x,0,1)*255+.5f),int(clamp(c.y,0,1)*255+.5f),int(clamp(c.z,0,1)*255+.5f));
     action(label,hex,[&,label](){char initial[8];std::snprintf(initial,sizeof(initial),"%02X%02X%02X",int(c.x*255+.5f),int(c.y*255+.5f),int(c.z*255+.5f));std::string text=initial;
      if(keyboard(label+" HEX RRGGBB",text)){if(text.size()==7&&text[0]=='#')text.erase(0,1);char* end=nullptr;unsigned long value=std::strtoul(text.c_str(),&end,16);
-      if(text.size()==6&&text.find_first_not_of("0123456789abcdefABCDEF")==std::string::npos&&*end=='\0'){c={float((value>>16)&255)/255,float((value>>8)&255)/255,float(value&255)/255};if(label!="SKY COLOR")v.customGradient=true;changed=true;}else status="USE SIX HEX DIGITS RRGGBB";}
+      if(text.size()==6&&text.find_first_not_of("0123456789abcdefABCDEF")==std::string::npos&&*end=='\0'){c={float((value>>16)&255)/255,float((value>>8)&255)/255,float(value&255)/255};if(label=="GRADIENT START"||label=="GRADIENT END")v.customGradient=true;changed=true;}else status="USE SIX HEX DIGITS RRGGBB";}
     });
    };
    colorField("GRADIENT START",v.gradientLow);colorField("GRADIENT END",v.gradientHigh);
    real("GRADIENT SCALE",v.gradientScale,.1f,.01f,100);real("GRADIENT OFFSET",v.gradientOffset,.05f,-100,100);boolean("REPEAT GRADIENT",v.gradientRepeat);
    real("LIGHT YAW",v.lightYaw,.1f,-6.3f,6.3f);real("LIGHT PITCH",v.lightPitch,.1f,-1.5f,1.5f);real("EXPOSURE",v.exposure,.1f,.1f,4);
+   real("SUN STRENGTH",v.sunStrength,.1f,0,4);
+   fields.push_back({{"EDIT POINT LIGHT",std::to_string(lightIndex+1)},[&](int d){lightIndex=(lightIndex+d+2)%2;menuDirty=true;},{}});
+   PointLight& lamp=v.pointLights[lightIndex];boolean("POINT LIGHT ENABLED",lamp.enabled);boolean("CAMERA RELATIVE LIGHT",lamp.cameraRelative);
+   real("POINT X",lamp.position.x,.1f,-10000,10000);real("POINT Y",lamp.position.y,.1f,-10000,10000);real("POINT Z",lamp.position.z,.1f,-10000,10000);
+   colorField("POINT COLOR",lamp.color);real("POINT INTENSITY",lamp.intensity,.5f,0,50);real("POINT RANGE",lamp.range,.5f,.1f,100);boolean("POINT SHADOWS",v.pointShadows);
+   auto progressive=[&](){v.progressiveLighting=!v.progressiveLighting;if(v.progressiveLighting&&v.giSamples==0)v.giSamples=1;changed=true;};
+   fields.push_back({{"PROGRESSIVE LIGHTING",v.progressiveLighting?"ON":"OFF"},[progressive](int){progressive();},progressive});
+   integer("LIGHTING PASSES",v.lightingPasses,1,1,128);
    integer("INDIRECT SAMPLES",v.giSamples,1,0,4);integer("INDIRECT STEPS",v.giSteps,4,4,64);
    real("INDIRECT STRENGTH",v.giStrength,.1f,0,2);real("INDIRECT RANGE",v.giRange,.1f,.1f,10);colorField("SKY COLOR",v.skyColor);
    real("SPECULAR",v.specular,.05f,0,1);real("FOG DENSITY",v.fog,.01f,0,1);
@@ -206,6 +216,7 @@ int main(){
    action("BENCH RAYS / SECOND",benchmark?number(benchmark->raysPerSecond()):"NOT RUN",[](){});
    action("CANCEL BENCHMARK","A CANCEL",[&](){benchmarkActive=false;});
    action("UI FRAME / TRACE MS",number(renderer.measuredFrameMs())+" / "+number(workMs),[](){});
+   action("LIGHTING PASSES DONE",std::to_string(renderer.accumulatedPasses())+" / "+std::to_string(scene.settings.lightingPasses),[](){});
    action("GPU MODE / TRIANGLES",std::string(meshNavigation?"ON / ":"OFF / ")+std::to_string(gpuSurface.triangles()),[](){});
    action("GPU DRAW MS",number(gpuSurface.drawingMs()),[](){});
    action("RAYS / DE QUERIES",std::to_string(renderer.profile().rays)+" / "+std::to_string(renderer.profile().distanceQueries),[](){});
@@ -252,7 +263,7 @@ int main(){
   if(captureRequested){captureRequested=false;SurfaceMesh mesh;
    if(!meshNavigation&&!motion&&renderer.captureSurface(scene,mesh)&&gpuSurface.upload(mesh)){
     meshNavigation=true;scene.settings.quality=false;refreshPending=false;status="GPU SURFACE / "+std::to_string(gpuSurface.triangles())+" TRIANGLES";
-   }else status="ENABLE GPU CACHE / FINISH SINGLE-SAMPLE RENDER";
+   }else status="ENABLE CACHE / NO DOF-PROGRESS / FINISH";
    menuDirty=true;
   }
   Scene* rendering=&scene;

@@ -18,8 +18,8 @@ class TraceBenchmark {
  bool complete()const{return cursor==1500;}
  int completedSamples()const{return cursor;}
  void step(BatchShader shader=nullptr,void* context=nullptr){
-  RenderJob jobs[16];RenderResult results[16];int count=std::min(16,1500-cursor);
-  for(int k=0;k<count;++k){int cell=cursor+k;jobs[k]={cell%50*8+4,cell/50*8+4,1,0,0,preview};}
+  RenderJob jobs[16];RenderResult results[16];int samples=scene.settings.quality?scene.settings.samples:1;if(!preview&&scene.settings.dof&&scene.settings.aperture>0)samples=std::max(samples,scene.settings.dofSamples);int count=std::min(std::max(1,16/samples),1500-cursor);
+  for(int k=0;k<count;++k){int cell=cursor+k;jobs[k]={cell%50*8+4,cell/50*8+4,1,0,0,preview,preview};}
   if(!count)return;
   if(shader&&scene.settings.parallel)shader(scene,rays,jobs,results,count,context);
   else renderJobs(scene,rays,jobs,results,count);
@@ -33,10 +33,10 @@ class TraceBenchmark {
  bool save(const std::string& path)const{
   std::ofstream out(path);if(!out)return false;
   const auto& s=scene.settings;
-  out<<std::setprecision(9)<<"samples,rays,trace_ms,rays_per_second,de_queries,checksum,iterations,ray_steps,quality,parallel,epsilon,zoom_precision,gi_samples,gi_steps,algebraic_bulb,moving_preview,distance_field_active\n"
+  out<<std::setprecision(9)<<"samples,rays,trace_ms,rays_per_second,de_queries,checksum,iterations,ray_steps,quality,parallel,epsilon,zoom_precision,gi_samples,gi_steps,algebraic_bulb,moving_preview,distance_field_active,dof,aperture,focus_distance,lens_samples,point_lights,point_shadows,sun_strength,progressive_lighting,lighting_passes\n"
    <<cursor<<','<<totals.rays<<','<<elapsedMs<<','<<raysPerSecond()<<','<<totals.distanceQueries<<','<<checksum<<','
    <<scene.formula.iterations<<','<<s.steps<<','<<s.quality<<','<<s.parallel<<','<<s.epsilon<<','<<s.adaptivePrecision<<','
-   <<s.giSamples<<','<<s.giSteps<<','<<scene.formula.algebraicBulb<<','<<preview<<','<<(rays.field!=nullptr)<<'\n';
+   <<s.giSamples<<','<<s.giSteps<<','<<scene.formula.algebraicBulb<<','<<preview<<','<<(rays.field!=nullptr)<<','<<s.dof<<','<<s.aperture<<','<<s.focusDistance<<','<<s.dofSamples<<','<<rays.pointMask<<','<<s.pointShadows<<','<<s.sunStrength<<','<<s.progressiveLighting<<','<<s.lightingPasses<<'\n';
   out.close();return bool(out);
  }
 };

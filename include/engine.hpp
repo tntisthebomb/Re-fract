@@ -61,6 +61,11 @@ Sample distanceOnly(const Formula& f,Vec p,bool exact=false);
 // Reference path for differential tests and host profiling.
 Sample distanceGeneric(const Formula& f,Vec p,bool trap=true);
 float repeatBoundaryStep(const Formula& f,Vec point,Vec direction);
+struct PointLight {
+ bool enabled=false,cameraRelative=true;
+ Vec position{0,1,0},color{1,.85f,.65f};
+ float intensity=5,range=8;
+};
 struct Settings {
  int steps=64,previewBlock=8,interlace=4,ao=0,shadow=0,samples=1;
  float epsilon=.002f,safety=.65f,farClip=20,fov=55;
@@ -87,6 +92,10 @@ struct Settings {
  int giSamples=0,giSteps=16;
  float giStrength=.5f,giRange=2;
  Vec skyColor{.15f,.2f,.3f};
+ std::array<PointLight,2> pointLights;
+ bool pointShadows=false,dof=false,progressiveLighting=false;
+ float sunStrength=1,aperture=.03f,focusDistance=4;
+ int dofSamples=4,lightingPasses=32;
 };
 struct Camera {Vec position{0,0,-4};float yaw=0,pitch=0,speed=1;bool surfaceSpeed=true;float surfaceRange=1,minimumSpeed=.01f;};
 Camera presetCamera(int index);
@@ -104,8 +113,10 @@ class DistanceField;
 struct Rays {
  Vec forward,right,up,light;float tangent=1;
  const DistanceField* field=nullptr;
+ std::array<Vec,2> pointPositions{};int pointMask=0;
  explicit Rays(const Scene& s);
  void ray(const Scene& s,float x,float y,float eye,Vec& origin,Vec& direction)const;
+ void lensRay(const Scene& s,float x,float y,float eye,float lensX,float lensY,Vec& origin,Vec& direction)const;
  bool project(const Scene& s,Vec point,float eye,float& x,float& y,float& depth)const;
 };
 struct Color {uint8_t r=0,g=0,b=0;};
@@ -123,10 +134,10 @@ struct Profile {
  uint64_t rays=0,steps=0,distanceQueries=0,shadingQueries=0,reused=0,skipped=0,relaxFallbacks=0,batches=0;
  void add(const Profile& p);
 };
-struct RenderJob {int x=0,y=0,block=1,eye=0;float offset=0;bool fast=false;};
-struct ShadeRecord {float trap=0,depth=0,lighting=0,specular=0;bool valid=false;Vec indirect{};};
+struct RenderJob {int x=0,y=0,block=1,eye=0;float offset=0;bool fast=false;bool moving=false;uint32_t sample=0;bool accumulate=false;};
+struct ShadeRecord {float trap=0,depth=0,lighting=0,specular=0;bool valid=false;Vec indirect{},localDiffuse{},localSpecular{};};
 Color recolorSample(const Settings& settings,const ShadeRecord& record);
-struct RenderResult {ShadeRecord shade;Color color;Vec point;float depth=0;bool hit=false;Profile profile;};
+struct RenderResult {ShadeRecord shade;Color color;Vec point;float depth=0;bool hit=false;Profile profile;Vec radiance{};};
 RenderResult renderJob(const Scene& s,const Rays& rays,const RenderJob& job);
 void renderJobs(const Scene& s,const Rays& rays,const RenderJob* jobs,RenderResult* results,int count);
 using BatchShader=void (*)(const Scene&,const Rays&,const RenderJob*,RenderResult*,int,void*);
@@ -135,6 +146,8 @@ class Renderer {
  std::array<std::vector<float>,2> depths;
  std::array<std::vector<uint8_t>,2> ages;
  std::array<std::vector<ShadeRecord>,2> shades;
+ std::array<std::vector<Vec>,2> accumulation;
+ int lightingPass=0,finishedLightingPasses=0;
  bool cacheReady=false;
  struct History {Vec point;Color color;float footprint=0;uint32_t stamp=0;int eye=0;};
  std::array<History,8192> history{};size_t historyCount=0,historyCursor=0;
@@ -167,6 +180,7 @@ class Renderer {
  void resetProfile(){totals={};}
  int previewSize()const{return dynamicBlock;}
  float measuredFrameMs()const{return frameMs;}
+ int accumulatedPasses()const{return finishedLightingPasses;}
  float progress(const Scene& s)const;
 };
 bool saveScene(const Scene& scene,const std::string& path,std::string& error);

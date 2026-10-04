@@ -105,9 +105,9 @@ int main(int argc,char** argv){
  check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error),"v2 scene roundtrip");
  check(loaded.settings.temporal&&loaded.settings.batchSize==16&&loaded.settings.customGradient&&near(loaded.settings.gradientLow.x,1)&&near(loaded.camera.minimumSpeed,.023f),"new settings persist");
  // Remove only the three v2 extension lines to obtain a legacy v1 scene.
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0)continue;if(n==0)out<<"REFRACT 1\n";else if(n!=2&&(n<5||n>7))out<<line<<'\n';++n;}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(n==0)out<<"REFRACT 1\n";else if(n!=2&&(n<5||n>7))out<<line<<'\n';++n;}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.temporal&&!loaded.settings.customGradient,"legacy v1 file still loads");
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0)continue;if(n==0)out<<"REFRACT 2\n";else if(n!=2)out<<line<<'\n';++n;}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(n==0)out<<"REFRACT 2\n";else if(n!=2)out<<line<<'\n';++n;}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.formula.repeat&&loaded.settings.temporal,"legacy v2 file still loads");
  s=Scene{};rays=Rays(s);
  for(float eye:{-.04f,0.f,.04f})for(float x:{10.f,200.f,390.f}){Vec o,direction;rays.ray(s,x,95,eye,o,direction);float px,py,depth;
@@ -214,7 +214,7 @@ int main(int argc,char** argv){
  check(avoidsJump,"mesh rejects triangles bridging depth discontinuities");
  check(surfaceMesh(s,{},meshDepths,1,0).indices.empty()&&surfaceMesh(s,meshColors,meshDepths,8,0).indices.empty(),"invalid buffers and too-coarse source reject capture");
  s.settings.meshStride=8;s.settings.meshEdge=.12f;check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error)&&loaded.settings.gpuCache&&loaded.settings.meshStride==8&&near(loaded.settings.meshEdge,.12f),"GPU controls persist in scene v4");
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0)continue;if(line=="REFRACT 5")line="REFRACT 3";out<<line<<'\n';}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(line=="REFRACT 6")line="REFRACT 3";out<<line<<'\n';}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.gpuCache,"legacy v3 defaults to CPU rendering");
  s=Scene{};s.settings.gpuCache=true;s.settings.previewBlock=4;s.settings.autoRefine=false;rays=Rays(s);renderer.invalidate(s,false);
  while(!renderer.complete())renderer.step(s,rays,0);
@@ -267,7 +267,7 @@ int main(int argc,char** argv){
  s.settings.giStrength=.7f;s.settings.adaptivePrecision=true;s.settings.gpuAutoRefresh=true;s.settings.adaptiveDetail=true;
  s.settings.distanceField=true;s.settings.fieldSpacing=.4f;s.settings.minEpsilon=.000002f;s.settings.skyColor={.2f,.3f,.4f};
  check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error)&&loaded.settings.distanceField&&near(loaded.settings.fieldSpacing,.4f)&&loaded.settings.adaptivePrecision&&loaded.settings.adaptiveDetail&&loaded.settings.gpuAutoRefresh&&loaded.settings.giSamples==4&&near(loaded.settings.skyColor.z,.4f),"v5 precision, indirect and refresh settings roundtrip");
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("LIGHT ",0)==0)continue;if(line=="REFRACT 5")line="REFRACT 4";out<<line<<'\n';}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(line=="REFRACT 6")line="REFRACT 4";out<<line<<'\n';}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.adaptivePrecision&&loaded.settings.giSamples==0,"legacy v4 uses original precision and no indirect lighting");
  s.settings.giSamples=5;check(!saveScene(s,"bad.rfs",error),"reject excessive secondary samples");
  s.settings.giSamples=0;s.settings.minEpsilon=0;check(!saveScene(s,"bad.rfs",error),"reject zero precision floor");
@@ -278,6 +278,61 @@ int main(int argc,char** argv){
  check(serialBench.completedSamples()==1500&&serialBench.profile().rays==1500&&serialBench.raysPerSecond()==0,"benchmark workload bounded and zero elapsed safe");
  serialBench.recordMs(100);check(near(serialBench.raysPerSecond(),15000,.01f),"benchmark rate measures traced rays per active second");
  for(int n=24;n<PresetCount;++n){Scene corridor;corridor.formula=preset(n);corridor.camera=presetCamera(n);corridor.settings=presetSettings(n);check(saveScene(corridor,"test.rfs",error),"new preset appearance and camera save within supported range");}
+ // Thin-lens rays converge at the forward-depth focus plane for both stereo eyes.
+ s=Scene{};s.settings.aperture=.2f;s.settings.focusDistance=4;s.settings.convergence=4;rays=Rays(s);
+ for(float eye:{-.04f,0.f,.04f})for(float x:{10.f,200.f,390.f}){
+  Vec origin,direction;rays.ray(s,x,95,eye,origin,direction);Vec target=origin+direction*(4/direction.dot(rays.forward));
+  for(Vec lens:{Vec{0,0,0},Vec{.5f,.3f,0},Vec{-.4f,.6f,0}}){Vec lo,ld;rays.lensRay(s,x,95,eye,lens.x,lens.y,lo,ld);
+   Vec focus=lo+ld*(4/ld.dot(rays.forward));check((focus-target).length()<.00001f,"lens rays retain the stereo focus-plane target");check(near(ld.length(),1,1e-6f),"lens rays normalized");}
+ }
+ s.settings.aperture=0;Vec lo,ld,po,pd;rays.lensRay(s,120,80,.04f,.8f,-.2f,lo,ld);rays.ray(s,120,80,.04f,po,pd);
+ check(lo.x==po.x&&lo.y==po.y&&lo.z==po.z&&ld.x==pd.x&&ld.y==pd.y&&ld.z==pd.z,"zero aperture preserves pinhole ray exactly");
+ // Camera-relative lights use camera basis; world lights stay fixed.
+ s=Scene{};s.camera.yaw=.7f;s.camera.pitch=.3f;s.settings.pointLights[0].enabled=true;s.settings.pointLights[0].position={1,2,3};rays=Rays(s);
+ Vec expectedLamp=s.camera.position+rays.right+rays.up*2+rays.forward*3;
+ check((rays.pointPositions[0]-expectedLamp).length()<1e-6f&&rays.pointMask==1,"camera light resolves position once per view");
+ s.settings.pointLights[0].cameraRelative=false;rays=Rays(s);check((rays.pointPositions[0]-Vec{1,2,3}).length()==0,"world point light does not follow camera");
+ // Point lights change shading without changing primary hits; cached colors stay consistent.
+ s=Scene{};rays=Rays(s);RenderJob opticalJob{200,120,1,0,0,false};auto pinhole=renderJob(s,rays,opticalJob);
+ s.settings.pointLights[0].enabled=true;s.settings.pointLights[0].intensity=15;s.settings.pointLights[0].position={0,0,0};rays=Rays(s);
+ auto point=renderJob(s,rays,opticalJob);auto pointCached=recolorSample(s.settings,point.shade);
+ check(point.hit&&point.depth==pinhole.depth&&point.shade.localDiffuse.length()>0,"point lighting preserves geometry and illuminates visible surface");
+ s.settings.pointLights[0].intensity=50;s.settings.exposure=4;auto brightPoint=renderJob(s,Rays(s),opticalJob);
+ check(brightPoint.radiance.x>1&&brightPoint.color.r==255,"point-light samples retain HDR radiance above display clipping");s.settings.pointLights[0].intensity=15;s.settings.exposure=1;
+ check(pointCached.r==point.color.r&&pointCached.g==point.color.g&&pointCached.b==point.color.b,"point-light RGB retained by recoloring cache");
+ s.settings.pointLights[0].range=.1f;auto beyondRange=renderJob(s,Rays(s),opticalJob);
+ check(beyondRange.color.r==pinhole.color.r&&beyondRange.color.g==pinhole.color.g&&beyondRange.color.b==pinhole.color.b,"finite point light range excludes distant surfaces");
+ s.settings.pointLights[0].range=8;s.settings.shadow=32;s.settings.pointShadows=false;auto unshadowedPoint=renderJob(s,Rays(s),opticalJob);s.settings.pointShadows=true;auto shadowedPoint=renderJob(s,Rays(s),opticalJob);
+ check(shadowedPoint.profile.distanceQueries>unshadowedPoint.profile.distanceQueries,"point shadows account for bounded extra geometry queries");
+ s=Scene{};s.settings.dof=true;s.settings.aperture=.15f;s.settings.dofSamples=8;rays=Rays(s);
+ auto lens=renderJob(s,rays,opticalJob);opticalJob.moving=true;auto movingLens=renderJob(s,rays,opticalJob);
+ check(lens.profile.rays==8&&!lens.shade.valid&&movingLens.profile.rays==1,"lens sampling is stationary-only and disables single-ray geometry cache");
+ opticalJob.moving=false;auto sameLens=renderJob(s,rays,opticalJob);
+ check(lens.color.r==sameLens.color.r&&lens.color.g==sameLens.color.g&&lens.color.b==sameLens.color.b,"lens sample sequence reproducible");
+ // HDR accumulation averages completed lighting passes, with no stale motion/stereo samples.
+ s=Scene{};s.settings.previewBlock=16;s.settings.autoRefine=false;s.settings.giSamples=1;s.settings.progressiveLighting=true;s.settings.lightingPasses=3;s.settings.gpuCache=true;
+ rays=Rays(s);Renderer progressive;progressive.invalidate(s,false);int progressiveSteps=0;
+ while(!progressive.complete()&&progressiveSteps++<2000)progressive.step(s,rays,1);
+ check(progressive.complete()&&progressive.accumulatedPasses()==3&&progressive.rays()==uint64_t(25*15*2*3),"progressive pass scheduler covers each stereo cell exactly once per pass");
+ Vec sum;for(int pass=0;pass<3;++pass)sum=sum+renderJob(s,rays,{192,112,16,0,-s.settings.eyeSeparation*.5f,false,false,uint32_t(pass),true}).radiance;
+ Color mean{uint8_t(clamp(sum.x/3,0,1)*255),uint8_t(clamp(sum.y/3,0,1)*255),uint8_t(clamp(sum.z/3,0,1)*255)};auto accumulated=progressive.image(0)[112*W+192];
+ check(std::abs(int(mean.r)-accumulated.r)<=1&&std::abs(int(mean.g)-accumulated.g)<=1&&std::abs(int(mean.b)-accumulated.b)<=1,"progressive output matches unquantized sample average");
+ Renderer parallelProgressive;parallelProgressive.setBatchShader(parallelBenchmark,nullptr);parallelProgressive.invalidate(s,false);
+ while(!parallelProgressive.complete())parallelProgressive.step(s,rays,1);
+ bool sameAccumulation=true;for(int eye=0;eye<2;++eye)for(int k=0;k<W*H;++k){auto a=progressive.image(eye)[k],b=parallelProgressive.image(eye)[k];sameAccumulation&=a.r==b.r&&a.g==b.g&&a.b==b.b;}
+ check(sameAccumulation,"parallel progressive jobs preserve deterministic stereo accumulation");
+ check(!progressive.recolor(s)&&!progressive.captureSurface(s,mesh),"accumulated image cannot masquerade as a single geometric surface capture");
+ progressive.beginFrame(s,false,false,0);check(!progressive.complete()&&progressive.accumulatedPasses()==0,"stereo change resets progressive accumulation without relying on UI motion");
+ progressive.invalidate(s,true);check(progressive.accumulatedPasses()==0,"movement clears accumulated pass count");
+ s.settings.lightingPasses=1;progressive.invalidate(s,false);while(!progressive.complete())progressive.step(s,rays,0);
+ auto restarted=renderJob(s,rays,{192,112,16,0,0,false,false,0,true}).color,afterReset=progressive.image(0)[112*W+192];
+ check(restarted.r==afterReset.r&&restarted.g==afterReset.g&&restarted.b==afterReset.b,"restart replaces previous sums instead of blending old viewpoint");
+ s.settings.gpuCache=true;s.settings.dof=true;s.settings.dofSamples=2;s.settings.pointLights[1].enabled=true;s.settings.pointLights[1].cameraRelative=false;s.settings.pointLights[1].color={.1f,.3f,.9f};s.settings.pointShadows=true;s.settings.sunStrength=.4f;
+ check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error)&&loaded.settings.dof&&loaded.settings.dofSamples==2&&loaded.settings.progressiveLighting&&loaded.settings.pointLights[1].enabled&&!loaded.settings.pointLights[1].cameraRelative&&near(loaded.settings.pointLights[1].color.z,.9f)&&near(loaded.settings.sunStrength,.4f),"v6 lights, lens and progressive settings roundtrip");
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(line=="REFRACT 6")line="REFRACT 5";out<<line<<'\n';}}
+ check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.dof&&!loaded.settings.progressiveLighting&&!loaded.settings.pointLights[0].enabled&&!loaded.settings.pointLights[1].enabled,"legacy v5 defaults to pinhole, fixed lighting and disabled point lights");
+ s.settings.focusDistance=0;check(!saveScene(s,"bad.rfs",error),"reject zero focal distance");s.settings.focusDistance=4;s.settings.lightingPasses=129;check(!saveScene(s,"bad.rfs",error),"reject unbounded accumulation passes");
+ s.settings.lightingPasses=32;s.settings.pointLights[0].color.x=2;check(!saveScene(s,"bad.rfs",error),"reject invalid point-light color");
  if(argc>1){
   std::string prefix=argv[1];s=Scene{};s.settings.previewBlock=4;s.settings.autoRefine=false;
   for(int n=0;n<PresetCount;++n){s.settings=presetSettings(n);s.settings.previewBlock=4;s.settings.autoRefine=false;s.formula=preset(n);s.camera=presetCamera(n);s.settings.farClip=40;s.settings.convergence=-s.camera.position.z;rays=Rays(s);renderer.invalidate(s,false);

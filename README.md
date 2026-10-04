@@ -15,6 +15,7 @@ A customizable stereoscopic fractal laboratory for New Nintendo 3DS homebrew, wi
 - Completed single-sample images support trace-free gradient edits, with parallel recoloring at fine resolution and one color evaluation per coarse block. Polynomial expression Julia formulas have direct derivative kernels; edited formulas retain the general interpreter.
 - Zoom-aware hit precision and optional motion/detail iteration limits; an experimental open-space distance cache for moving previews.
 - Optional one-bounce indirect lighting with sky color and bounded secondary tracing.
+- Two configurable RGB point lights, optional point shadows, sampled depth of field and stationary progressive lighting.
 - On-console frozen-view benchmarks with CSV exports and separate moving-preview tests.
 - Optional GPU surface-cache navigation: capture a completed traced view, then use PICA200 triangles/depth testing and independent stereo projections to move without retracing. Hidden geometry is absent; lighting/colors are baked. Resume CPU rendering to refresh the cache, or enable automatic recapture after movement stops.
 - Optional algebraic Mandelbulb math for powers 2/4/8/16 with standard angular multipliers. Quality mode retains the original trigonometric path.
@@ -127,4 +128,14 @@ Under COLOR, **INDIRECT SAMPLES 1** enables a bounded diffuse-bounce/skylight ap
 
 Under FILES, run **BENCH CURRENT VIEW** or **BENCH MOVE PREVIEW**. Each evaluates a frozen 1,500-position mono grid, honors the selected quality/sample settings, and writes `sdmc:/3ds/Re-fract/benchmark-N.csv` for the selected scene slot. The benchmark pauses normal CPU rendering. It reports active tracing throughput, not displayed FPS. Use the moving benchmark with a completed distance cache to compare that experiment.
 
-Scenes now save as format v5 and still load v1–v4. Previous app versions cannot load v5 scenes. See [PERFORMANCE.md](docs/PERFORMANCE.md) for limits and hardware checks.
+Scenes now save as format v6 and still load v1–v5. Previous app versions cannot load v6 scenes. See [PERFORMANCE.md](docs/PERFORMANCE.md) for limits and hardware checks.
+
+## Point lights, depth of field and progressive lighting
+
+**COLOR → EDIT POINT LIGHT** selects one of two lights. Enable **POINT LIGHT ENABLED**; adjust position, color, intensity and range. **CAMERA RELATIVE LIGHT** makes X/Y/Z offsets mean right/up/forward from the camera (default position 0,1,0). Turn it off to use world coordinates. **POINT SHADOWS** uses RENDER → SHADOW STEPS; start with 16. **SUN STRENGTH** controls the existing directional light; a small value helps local lights stand out. Fast moving lighting skips all surface lighting; disable that shortcut if you need lit navigation. GPU captures bake point lighting and need recapture after movement, including camera-relative lights.
+
+**RENDER → DEPTH OF FIELD** enables a sampled thin lens while stationary. **LENS APERTURE** is the lens radius in world units: start at 0.03–0.05. **FOCUS DISTANCE** is forward depth from the camera, not distance along a slanted ray. **LENS SAMPLES 4** is a starting point; more samples smooth blur and cost more rays. **FOCUS AT CONVERGENCE** matches the stereo convergence distance. Movement uses pinhole rays. Depth of field cannot be captured into the GPU surface cache.
+
+**COLOR → PROGRESSIVE LIGHTING** adds repeated stationary passes with varied indirect-light samples and floating-point accumulation before display clipping. Enabling it in the menu sets INDIRECT SAMPLES to 1 if they were zero. Start with **LIGHTING PASSES 8–16**. It also improves lens sampling when depth of field is active. Camera movement, scene edits and stereo changes restart accumulation. FILES shows completed lighting passes; rendering stops at the selected limit. This remains the existing bounded diffuse-bounce approximation, not full path tracing. GPU capture and cached material recoloring are disabled for accumulated images.
+
+These features are off by default and can increase rendering time substantially. The CIA/3DSX builds are tested; final performance and stereo comfort still require console testing. Run the portable `optics_preview` target with an output prefix to reproduce point-light, lens and progressive examples.
