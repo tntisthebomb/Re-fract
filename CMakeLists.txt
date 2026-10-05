@@ -27,3 +27,6 @@ target_link_libraries(color_preview PRIVATE refract_core)
 
 add_executable(upscale_preview tests/upscale_preview.cpp)
 target_link_libraries(upscale_preview PRIVATE refract_core)
+
+add_executable(performance_benchmark tests/performance_benchmark.cpp)
+target_link_libraries(performance_benchmark PRIVATE refract_core)

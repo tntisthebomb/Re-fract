@@ -176,6 +176,7 @@ int main(){
    action("RESUME CPU RENDER","A TRACE HERE",[&](){gpuSurface.synchronize();meshNavigation=false;changed=true;status="CPU RENDER AT CURRENT CAMERA";topCopies[0].reset();topCopies[1].reset();});
    integer("BATCH SIZE",v.batchSize,1,1,32);boolean("ADAPT RESOLUTION",v.adaptiveResolution);integer("TARGET REFRESH FPS",v.targetFps,5,15,60);
    boolean("FAST MOVE LIGHTING",v.previewLighting);boolean("DISTANCE FIELD EXP",v.distanceField);real("FIELD GRID SPACING",v.fieldSpacing,.05f,.05f,1);boolean("TEMPORAL EXPERIMENT",v.temporal);boolean("STEREO REUSE EXP",v.stereoReuse);
+   boolean("DEPTH PREPASS",v.depthPrepass);choice("PREPASS BLOCK",v.prepassBlock,{4,8,16,32});real("PREPASS START FRACTION",v.prepassSafety,.05f,0,.9f);boolean("ADAPT RAY BUDGET",v.adaptiveRayBudget);integer("SKY RAY MIN STEPS",v.rayMinSteps,4,4,4096);boolean("RETRY SHORT RAYS",v.rayBudgetRetry);
    boolean("ADAPT EMPTY SPACE",v.adaptiveEmpty);boolean("ADAPT SKY EDGES",v.adaptiveSkyEdges);integer("SKY PROBE EVERY N",v.emptyProbe,1,1,64);integer("EDGE PROBE EVERY N",v.skyEdgeProbe,1,1,64);integer("SKY NEIGHBORS NEEDED",v.skyNeighbors,1,1,9);integer("DENSE REFRESH PASSES",v.emptyRefresh,1,0,256);
    boolean("ADAPTIVE TILES EXP",v.adaptiveTiles);boolean("FIXED FOVEATION EXP",v.foveated);real("RELAXATION EXP",v.relaxation,.05f,1,1.5f);
    integer("HISTORY FRAMES",v.historyFrames,1,1,30);integer("REFRESH EVERY N",v.refreshRate,1,1,8);
@@ -242,6 +243,7 @@ int main(){
    colorField("POINT COLOR",lamp.color);real("POINT INTENSITY",lamp.intensity,.5f,0,50);real("POINT RANGE",lamp.range,.5f,.1f,100);boolean("POINT SHADOWS",v.pointShadows);
    auto progressive=[&](){v.progressiveLighting=!v.progressiveLighting;if(v.progressiveLighting&&v.giSamples==0)v.giSamples=1;changed=true;};
    fields.push_back({{"PROGRESSIVE LIGHTING",v.progressiveLighting?"ON":"OFF"},[progressive](int){progressive();},progressive});
+   boolean("SEPARATE GI RES",v.separateLighting);boolean("ADAPT GI SAMPLES",v.adaptiveLighting);integer("GI MIN PASSES",v.lightingMinPasses,1,2,4096);real("GI ERROR THRESHOLD",v.lightingThreshold,.005f,.0001f,1);integer("GI REFRESH PASSES",v.lightingRefresh,1,0,256);real("GI DEPTH EDGE",v.lightingDepthTolerance,.01f,.001f,1);
    integer("LIGHTING PASSES",v.lightingPasses,1,1,128);choice("LIGHTING BLOCK",v.lightingBlock,{1,2,4,8,16});
    integer("INDIRECT SAMPLES",v.giSamples,1,0,4);integer("INDIRECT STEPS",v.giSteps,4,4,64);
    real("INDIRECT STRENGTH",v.giStrength,.1f,0,2);real("INDIRECT RANGE",v.giRange,.1f,.1f,10);colorField("SKY COLOR",v.skyColor);
@@ -277,6 +279,8 @@ int main(){
    action("GPU MODE / TRIANGLES",std::string(meshNavigation?"ON / ":"OFF / ")+std::to_string(gpuSurface.triangles()),[](){});
    action("GPU DRAW MS",number(gpuSurface.drawingMs()),[](){});
    action("RAYS / DE QUERIES",std::to_string(renderer.profile().rays)+" / "+std::to_string(renderer.profile().distanceQueries),[](){});
+   action("GI CELLS SKIPPED",std::to_string(renderer.profile().lightingSkipped),[](){});
+   action("DEPTH STARTS / RAY RETRIES",std::to_string(renderer.profile().depthStarts)+" / "+std::to_string(renderer.profile().budgetRetries),[](){});
    action("SKY CELLS SKIPPED",std::to_string(renderer.profile().skySkipped),[](){});
    action("REUSE EVENTS / BATCHES",std::to_string(renderer.profile().reused)+" / "+std::to_string(renderer.profile().batches),[](){});
    action("RESET COUNTERS","A RESET",[&](){renderer.resetProfile();});
@@ -335,7 +339,7 @@ int main(){
   if(!meshNavigation||refresh)renderer.beginFrame(*rendering,motion||now<sliderUntil,changed,slider);
   if(scene.settings.distanceField&&!scene.settings.adaptiveDetail&&(!distanceField||changed||!distanceField->containsCamera(scene.camera.position)))distanceField=std::make_shared<DistanceField>(scene);
   if(!scene.settings.distanceField||scene.settings.adaptiveDetail)distanceField.reset();
-  Rays rays(*rendering);rays.field=scene.settings.adaptiveDetail?nullptr:distanceField.get();uint64_t start=osGetTime(),beforeRays=renderer.rays(),beforeRevision=renderer.imageRevision();
+  Rays rays(*rendering);rays.field=scene.settings.adaptiveDetail?nullptr:distanceField.get();uint64_t start=osGetTime(),beforeJobs=renderer.jobs(),beforeRevision=renderer.imageRevision();
   if(distanceField&&!distanceField->ready()&&!benchmarkActive&&!meshNavigation){
    distanceField->build(worker.available()&&scene.settings.parallel?StereoWorker::parallelFor:nullptr,&worker);
   }
@@ -394,7 +398,7 @@ int main(){
   }
   gspWaitForVBlank();
   if(exitRequested)break;
-  renderer.endFrame(scene,float(osGetTime()-now),workMs,renderer.rays()-beforeRays);
+  renderer.endFrame(scene,float(osGetTime()-now),workMs,renderer.jobs()-beforeJobs);
  }
  worker.shutdown();gpuSurface.shutdown();rendererOwner.reset();sceneOwner.reset();gfxExit();return 0;
 }

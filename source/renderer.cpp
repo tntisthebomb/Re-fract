@@ -30,6 +30,7 @@ namespace {
 Color quantize(Vec v){return {uint8_t(clamp(v.x,0,1)*255),uint8_t(clamp(v.y,0,1)*255),uint8_t(clamp(v.z,0,1)*255)};}
 float radicalInverse(uint32_t n,uint32_t base){float value=0,weight=1.f/base;while(n){value+=(n%base)*weight;n/=base;weight/=base;}return value;}
 int lightingTarget(const Settings& s){return s.quality?1:std::max(s.stillBlock,s.lightingBlock);}
+bool separateActive(const Settings& s){return s.separateLighting&&!s.quality&&!(s.dof&&s.aperture>0)&&s.giSamples>0&&s.giStrength>0;}
 bool progressiveActive(const Settings& s){return s.progressiveLighting&&((s.giSamples>0&&s.giStrength>0)||(s.dof&&s.aperture>0));}
 }
 float hitTolerance(const Settings& o,float t,float tangent){
@@ -55,8 +56,8 @@ Color recolorSample(const Settings& o,const ShadeRecord& r){
  color=color+albedo.multiply(r.localDiffuse)+r.localSpecular;
  return quantize((color*fog+background*(1-fog))*o.exposure);
 }
-static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,float eye,bool fast,uint32_t sequence=0,bool varied=false,bool lens=false,bool indirect=true){
- RenderResult result;result.profile.rays=1;
+static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,float eye,bool fast,uint32_t sequence=0,bool varied=false,bool lens=false,bool indirect=true,float startDepth=0,bool skyLikely=false,const ShadeRecord* surface=nullptr){
+ RenderResult result;result.profile.rays=surface?0:1;if(surface)++result.profile.reused;
  // Per-ray counts fit in 32 bits; publish 64-bit totals once, avoiding paired
  // loads/stores on ARM11 for every distance-estimator call.
  uint32_t queries=0,shadingQueries=0,stepsTaken=0;
@@ -68,10 +69,12 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  if(lens){float radius=std::sqrt(radicalInverse(sequence+1,2)),angle=6.2831853f*radicalInverse(sequence+1,3);
   rays.lensRay(s,x,y,eye,radius*std::cos(angle),radius*std::sin(angle),origin,dir);
  }else rays.ray(s,x,y,eye,origin,dir);
- float t=0,trap=0;bool hit=false;const Settings& o=s.settings;
+ float t=surface?surface->depth:startDepth,trap=surface?surface->trap:0;bool hit=surface&&!surface->background;const Settings& o=s.settings;
  float previousT=0,previousD=0,advance=0;bool relaxed=false;
  int steps=o.quality?std::min(8192,o.steps*2):o.steps;
- for(int i=0;i<steps&&t<o.farClip;++i){
+ int budget=o.adaptiveRayBudget&&!o.quality&&skyLikely?std::min(steps,o.rayMinSteps):steps;
+ for(int i=0;!surface&&i<steps&&t<o.farClip;++i){
+  if(i==budget&&budget<steps){if(!o.rayBudgetRetry)break;++result.profile.budgetRetries;}
   ++stepsTaken;Sample d=query(origin+dir*t);
   if(!d.valid)return finish({180,20,90});
   if(relaxed&&previousD+d.distance<advance){t=previousT+std::fmax(previousD*o.safety,o.epsilon*.25f);d=query(origin+dir*t);++result.profile.relaxFallbacks;if(!d.valid)return finish({180,20,90});relaxed=false;}
@@ -83,22 +86,24 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
   if(s.formula.repeat)advance=std::fmin(advance,repeatBoundaryStep(s.formula,origin+dir*t,dir)+eps*.25f);
   t+=advance;
  }
+ if(!surface&&startDepth>0&&!hit){auto retry=sampleRay(s,rays,x,y,eye,fast,sequence,varied,lens,indirect,0,skyLikely,nullptr);retry.profile.steps+=stepsTaken;retry.profile.distanceQueries+=queries;retry.profile.reused+=result.profile.reused;retry.profile.budgetRetries+=result.profile.budgetRetries;retry.profile.relaxFallbacks+=result.profile.relaxFallbacks;++retry.profile.depthStarts;return retry;}
+ if(startDepth>0)++result.profile.depthStarts;
  Vec background=o.skyColor;
  if(!hit){result.shade.valid=true;result.shade.background=true;result.shade.escaped=t>=o.farClip;return finishLinear(background*o.exposure);}
  Vec p=origin+dir*t;result.hit=true;result.point=p;result.depth=t;
- ++queries;++shadingQueries;trap=distance(s.formula,p,o.quality).trap;
- if(fast){float fog=std::exp(-t*o.fog);return finishLinear((gradientColor(o,trap)*((1+o.emission)*fog)+background*(1-fog))*o.exposure);}
+ if(!surface){++queries;++shadingQueries;trap=distance(s.formula,p,o.quality).trap;}
+ if(fast){result.shade={trap,t,1,0,true};float fog=std::exp(-t*o.fog);return finishLinear((gradientColor(o,trap)*((1+o.emission)*fog)+background*(1-fog))*o.exposure);}
  float e=o.adaptivePrecision?hitTolerance(o,t,rays.tangent):std::fmax(o.epsilon,t*o.epsilon*.25f);
  // At large coordinates, a sub-ULP normal offset would sample the same point.
  if(o.adaptivePrecision)e=std::fmax(e,4*1.1920929e-7f*std::fmax(1.f,std::fmax(std::fabs(p.x),std::fmax(std::fabs(p.y),std::fabs(p.z)))));
  // Tetrahedral normal: four DE evaluations instead of six central differences.
  Vec v1{1,-1,-1},v2{-1,-1,1},v3{-1,1,-1},v4{1,1,1};
- Vec n=(v1*query(p+v1*e,true).distance+v2*query(p+v2*e,true).distance+
+ Vec n=surface?surface->normal:(v1*query(p+v1*e,true).distance+v2*query(p+v2*e,true).distance+
         v3*query(p+v3*e,true).distance+v4*query(p+v4*e,true).distance).unit();
- float diffuse=std::fmax(0.f,n.dot(rays.light)),ao=1,shadow=1;
- float baseSpec=o.specular>0&&o.sunStrength>0?std::pow(std::fmax(0.f,n.dot((rays.light-dir).unit())),24)*o.specular:0;
- for(int i=1;i<=o.ao&&ao>.15f;++i){float h=e*6*i;Sample d=query(p+n*h,true);ao-=std::fmax(0.f,h-d.distance)/h*(.35f/i);}
- if(o.sunStrength>0&&o.shadow&&(diffuse>0||baseSpec>0)){float st=e*8;Vec start=p+n*(e*4);
+ float diffuse=surface?0:std::fmax(0.f,n.dot(rays.light)),ao=1,shadow=1;
+ float baseSpec=!surface&&o.specular>0&&o.sunStrength>0?std::pow(std::fmax(0.f,n.dot((rays.light-dir).unit())),24)*o.specular:0;
+ for(int i=1;!surface&&i<=o.ao&&ao>.15f;++i){float h=e*6*i;Sample d=query(p+n*h,true);ao-=std::fmax(0.f,h-d.distance)/h*(.35f/i);}
+ if(!surface&&o.sunStrength>0&&o.shadow&&(diffuse>0||baseSpec>0)){float st=e*8;Vec start=p+n*(e*4);
   for(int i=0;i<o.shadow&&st<8;++i){Sample d=query(start+rays.light*st,true);
    if(!d.valid||d.distance<e){shadow=.15f;break;}
    shadow=std::fmin(shadow,12*d.distance/st);st+=std::fmax(d.distance*o.safety,e);
@@ -127,7 +132,9 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  };
  float spec=baseSpec*shadow*o.sunStrength;
  result.shade={trap,t,clamp(ao,.15f,1)*(.22f+.78f*diffuse*clamp(shadow,.15f,1)*o.sunStrength),spec,true};
- if(rays.pointMask)pointLighting(p,n,e,dir,true,result.shade.localDiffuse,result.shade.localSpecular);
+ if(surface){result.shade=*surface;result.shade.indirect={};spec=result.shade.specular;}
+ else if(rays.pointMask)pointLighting(p,n,e,dir,true,result.shade.localDiffuse,result.shade.localSpecular);
+ result.shade.normal=n;
  if(indirect&&o.giSamples>0&&o.giStrength>0){
   // Deterministic cosine-weighted hemisphere samples: no recursion, RNG or frame flicker.
   Vec axis=std::fabs(n.z)<.9f?Vec{0,0,1}:Vec{0,1,0};
@@ -206,21 +213,22 @@ Vec gradientColor(const Settings& s,float trap){
  return lo*(1-t)+hi*t;
 }
 Color trace(const Scene& s,const Rays& rays,float x,float y,float eye){return sampleRay(s,rays,x,y,eye,false).color;}
-void Profile::add(const Profile& p){rays+=p.rays;steps+=p.steps;distanceQueries+=p.distanceQueries;shadingQueries+=p.shadingQueries;reused+=p.reused;skipped+=p.skipped;relaxFallbacks+=p.relaxFallbacks;batches+=p.batches;skySkipped+=p.skySkipped;}
+void Profile::add(const Profile& p){rays+=p.rays;steps+=p.steps;distanceQueries+=p.distanceQueries;shadingQueries+=p.shadingQueries;reused+=p.reused;skipped+=p.skipped;relaxFallbacks+=p.relaxFallbacks;batches+=p.batches;skySkipped+=p.skySkipped;lightingSkipped+=p.lightingSkipped;budgetRetries+=p.budgetRetries;depthStarts+=p.depthStarts;}
 RenderResult renderJob(const Scene& s,const Rays& rays,const RenderJob& j){
  RenderResult result;int red=0,green=0,blue=0,count=s.settings.quality?s.settings.samples:1;
- bool coarseLighting=!j.moving&&progressiveActive(s.settings)&&s.settings.autoRefine&&j.block>lightingTarget(s.settings);
- bool lens=s.settings.dof&&s.settings.aperture>0&&!j.moving&&!coarseLighting;
+ bool coarseLighting=(!j.moving&&!j.surface&&separateActive(s.settings))||(!j.moving&&progressiveActive(s.settings)&&s.settings.autoRefine&&j.block>lightingTarget(s.settings));
+ bool lens=!j.surface&&s.settings.dof&&s.settings.aperture>0&&!j.moving&&!coarseLighting;
  if(lens)count=std::max(count,s.settings.dofSamples);
  Vec radiance;
  for(int i=0;i<count;++i){float jx=count==1?.5f:(i&1)?.75f:.25f,jy=count<=2?.5f:(i&2)?.75f:.25f;
   // Lens samples repeat the same 1/2/4 pixel pattern while varying the aperture.
   auto r=sampleRay(s,rays,std::min(W-.5f,j.x+j.block*jx),std::min(H-.5f,j.y+j.block*jy),j.offset,j.fast&&!s.settings.quality,
-   j.sample*uint32_t(count)+i,j.accumulate||lens,lens,!coarseLighting);
+   j.sample*uint32_t(count)+i,j.accumulate||lens||j.surface,lens,!coarseLighting,j.startDepth,j.skyLikely,j.surface);
   if(i==0){result.shade=r.shade;result.point=r.point;result.depth=r.depth;result.hit=r.hit;}
   result.profile.add(r.profile);red+=r.color.r;green+=r.color.g;blue+=r.color.b;radiance=radiance+r.radiance;
  }
  if(count!=1||lens||j.accumulate)result.shade.valid=false;
+ if(j.surface)result.shade.valid=true;
  result.radiance=radiance*(1.f/count);
  result.color=lens||j.accumulate?quantize(result.radiance):Color{uint8_t(red/count),uint8_t(green/count),uint8_t(blue/count)};
  return result;
@@ -238,12 +246,16 @@ bool Rays::project(const Scene& s,Vec p,float eye,float& x,float& y,float& depth
  y=H*.5f*(1-v.dot(up)/z/tangent);depth=v.length();return std::isfinite(x)&&std::isfinite(y)&&x>=0&&x<W&&y>=0&&y<H&&depth<s.settings.farClip;
 }
 void Renderer::invalidate(const Scene& s,bool motion,bool clearHistory){
- cacheReady=false;lightingPass=finishedLightingPasses=0;
+ cacheReady=false;lightingPass=finishedLightingPasses=0;lightingOnly=false;geometryBlock=prepassSourceBlock=0;
+ for(auto& samples:lightSamples)std::vector<LightSample>().swap(samples);
+ for(auto& d:prepassDepth)d.clear();
+ for(auto& sky:prepassSky)sky.clear();
  if(clearHistory)presentedReady=false;
  if(clearHistory||motion||!s.settings.adaptiveEmpty){emptyBlock=0;emptyPass=0;}
  if(!progressiveActive(s.settings))for(auto& sum:accumulation)std::vector<Vec>().swap(sum);
  int next=motion?(s.settings.adaptiveResolution?dynamicBlock:s.settings.previewBlock):(s.settings.quality?1:std::max(s.settings.previewBlock,s.settings.stillBlock));
  if(clearHistory||!(motion&&moving)||next!=block){index=0;lane=0;passTiming=false;}
+ if(!motion&&s.settings.depthPrepass&&!s.settings.quality&&s.settings.autoRefine)next=std::max(next,s.settings.prepassBlock);
  moving=motion;block=next;done=false;
  if(clearHistory){historyCount=historyCursor=0;for(auto& a:ages)std::fill(a.begin(),a.end(),0);}
 }
@@ -296,7 +308,7 @@ bool Renderer::captureSurface(const Scene& s,SurfaceMesh& mesh)const{
  mesh=std::move(next);return true;
 }
 void Renderer::endFrame(const Scene& s,float totalMs,float renderMs,uint64_t jobs){
- frameMs=totalMs;if(jobs){int samples=s.settings.quality?s.settings.samples:1;if(!moving&&s.settings.dof&&s.settings.aperture>0)samples=std::max(samples,s.settings.dofSamples);float cost=renderMs*samples/jobs;averageJobMs=averageJobMs==0?cost:averageJobMs*.8f+cost*.2f;}
+ frameMs=totalMs;if(jobs){float cost=renderMs/jobs;averageJobMs=averageJobMs==0?cost:averageJobMs*.8f+cost*.2f;}
  batchLimit=std::max(1,std::min(s.settings.batchSize,int(s.settings.budgetMs*.5f/std::max(.001f,averageJobMs))));
  if(moving&&s.settings.adaptiveResolution&&frame%15==0){float target=1000.f/s.settings.targetFps;
  float estimate=averageJobMs*((W+dynamicBlock-1)/dynamicBlock)*((H+dynamicBlock-1)/dynamicBlock)*activeEyes;
@@ -317,7 +329,7 @@ bool Renderer::skipCell(const Scene& s,int x,int y,int eye,int cell){
   }
  }
 
- if(s.settings.quality||s.settings.bloom>0||(!moving&&((s.settings.dof&&s.settings.aperture>0)||progressiveActive(s.settings))))return false;
+ if(s.settings.quality||s.settings.bloom>0||(!moving&&((s.settings.dof&&s.settings.aperture>0)||progressiveActive(s.settings)||separateActive(s.settings))))return false;
  if(!moving&&s.settings.adaptiveTiles&&block<4){
   int cx=std::min(W-1,x+block/2),cy=std::min(H-1,y+block/2);float center=depths[eye][cy*W+cx];Color c=pixels[eye][cy*W+cx];bool flat=center>0;
   for(int dy:{-4,4})for(int dx:{-4,4}){int k=std::max(0,std::min(H-1,cy+dy))*W+std::max(0,std::min(W-1,cx+dx));Color q=pixels[eye][k];
@@ -364,6 +376,31 @@ void Renderer::present(const Settings& s,int eyes){
  for(int eye=0;eye<eyes;++eye)upscaleImage(pixels[eye],presented[eye],block,s.upscale,s.parallel?parallelFor:nullptr,loopContext);
  presentedReady=true;++revision;
 }
+void Renderer::resolveLighting(const Scene& scene,int eyes,const RenderJob* updated,int count){
+ const auto& s=scene.settings;int stride=std::max(geometryBlock,s.lightingBlock),nx=(W+stride-1)/stride,ny=(H+stride-1)/stride;
+ // A changed lighting anchor influences the four adjacent interpolation tiles.
+ // Update only these tiles, so progress is visible without full-frame work per batch.
+ std::vector<int> tiles;tiles.reserve(count*4);
+ for(int i=0;i<count;++i){const auto& job=updated[i];int x=job.x/stride,y=job.y/stride;
+  for(int dy=-1;dy<=0;++dy)for(int dx=-1;dx<=0;++dx){int tx=x+dx,ty=y+dy;if(tx>=0&&ty>=0)tiles.push_back(job.eye*nx*ny+ty*nx+tx);}
+ }
+ std::sort(tiles.begin(),tiles.end());tiles.erase(std::unique(tiles.begin(),tiles.end()),tiles.end());
+ struct Work {Renderer* self;const Scene* scene;const std::vector<int>* tiles;int stride,nx,ny;};Work work{this,&scene,&tiles,stride,nx,ny};
+ auto tile=[](int index,void* data){auto& w=*static_cast<Work*>(data);auto& r=*w.self;const auto& s=w.scene->settings;
+  int cell=(*w.tiles)[index],eye=cell/(w.nx*w.ny),local=cell%(w.nx*w.ny),x0=local%w.nx*w.stride,y0=local/w.nx*w.stride;
+  for(int y=y0;y<std::min(H,y0+w.stride);y+=r.geometryBlock)for(int x=x0;x<std::min(W,x0+w.stride);x+=r.geometryBlock){auto& surface=r.shades[eye][y*W+x];if(!surface.valid)continue;
+   Vec light;float weight=0;float gx=float(x)/w.stride,gy=float(y)/w.stride;int bx=int(gx),by=int(gy);
+   if(!surface.background)for(int dy=0;dy<2;++dy)for(int dx=0;dx<2;++dx){int sx=std::min(w.nx-1,bx+dx),sy=std::min(w.ny-1,by+dy);const auto& sample=r.lightSamples[eye][sy*w.nx+sx];const auto& neighbor=r.shades[eye][sy*w.stride*W+sx*w.stride];
+    if(!sample.count||neighbor.background||!neighbor.valid||neighbor.normal.dot(surface.normal)<.6f||std::fabs(neighbor.depth-surface.depth)>std::fmax(s.epsilon*8,surface.depth*s.lightingDepthTolerance))continue;
+    float amount=(dx?gx-bx:1-(gx-bx))*(dy?gy-by:1-(gy-by));light=light+sample.mean*amount;weight+=amount;
+   }
+   surface.indirect=weight>1e-6f?light*(1/weight):Vec{};
+   Color c=recolorSample(s,surface);for(int yy=y;yy<std::min(H,y+r.geometryBlock);++yy)std::fill(r.pixels[eye].begin()+yy*W+x,r.pixels[eye].begin()+yy*W+std::min(W,x+r.geometryBlock),c);
+  }
+ };
+ if(parallelFor&&s.parallel)parallelFor(int(tiles.size()),tile,&work,loopContext);else for(int i=0;i<int(tiles.size());++i)tile(i,&work);
+ (void)eyes;++revision;
+}
 void Renderer::finishPass(const Scene& s,int eyes){
  if(!passTiming)return;
  classifyEmpty(s.settings,eyes);
@@ -378,32 +415,57 @@ void Renderer::step(const Scene& s,const Rays& rays,float slider){
  if(!passTiming){passStart=std::chrono::steady_clock::now();passTiming=true;}
  const auto& o=s.settings;bool stereo=o.stereo&&slider>.001f&&o.eyeSeparation>0;int eyes=stereo?2:1;activeEyes=eyes;
  RenderJob jobs[32];RenderResult results[32];int count=0,limit=std::min(32,std::max(eyes,std::min(o.batchSize,batchLimit)));
- bool accumulate=!moving&&progressiveActive(o)&&(block<=lightingTarget(o)||!o.autoRefine);
+ bool split=!moving&&separateActive(o);
+ int stride=lightingOnly?std::max(geometryBlock,o.lightingBlock):block;
+ bool accumulate=!split&&!moving&&progressiveActive(o)&&(block<=lightingTarget(o)||!o.autoRefine);
  if(accumulate&&accumulation[0].empty())for(auto& sum:accumulation)sum.resize(W*H);
- int nx=(W+block-1)/block,total=nx*((H+block-1)/block),lanes=std::min(o.interlace,total),scan=0;
+ int nx=(W+stride-1)/stride,total=nx*((H+stride-1)/stride),lanes=std::min(o.interlace,total),scan=0;
  while(count+eyes<=limit&&scan++<32){int cell=lane+index*lanes;
   if(cell>=total){++lane;index=0;if(lane>=lanes){lane=0;
-   if((!moving&&block>(progressiveActive(o)?lightingTarget(o):(o.quality?1:o.stillBlock))&&o.autoRefine)||accumulate){
+   if((!moving&&block>(split?o.stillBlock:progressiveActive(o)?lightingTarget(o):(o.quality?1:o.stillBlock))&&o.autoRefine)||accumulate||split){
     // Commit the last batch before advancing a refinement/accumulation pass.
     if(count){lane=lanes-1;index=(total+lanes-1)/lanes;break;}
-    if(!moving&&block>(progressiveActive(o)?lightingTarget(o):(o.quality?1:o.stillBlock))&&o.autoRefine){finishPass(s,eyes);block=std::max(1,block/2);return;}
+    if(!moving&&block>(split?o.stillBlock:progressiveActive(o)?lightingTarget(o):(o.quality?1:o.stillBlock))&&o.autoRefine){finishPass(s,eyes);prepassSourceBlock=block;
+     if(o.depthPrepass||o.adaptiveRayBudget){int cols=(W+block-1)/block,rows=(H+block-1)/block;for(int e=0;e<eyes;++e){prepassDepth[e].resize(cols*rows);prepassSky[e].resize(cols*rows);for(int y=0;y<rows;++y)for(int x=0;x<cols;++x){const auto& r=shades[e][y*block*W+x*block];prepassDepth[e][y*cols+x]=r.valid&&!r.background?r.depth:0;prepassSky[e][y*cols+x]=r.background&&r.escaped;}}}
+     block=std::max(o.quality?1:o.stillBlock,block/2);return;}
+    if(split&&!lightingOnly){finishPass(s,eyes);geometryBlock=block;lightingOnly=true;
+     for(int e=0;e<eyes;++e)lightSamples[e].assign(((W+std::max(block,o.lightingBlock)-1)/std::max(block,o.lightingBlock))*((H+std::max(block,o.lightingBlock)-1)/std::max(block,o.lightingBlock)),LightSample{});
+     return;}
     finishPass(s,eyes);finishedLightingPasses=lightingPass+1;
-    if(finishedLightingPasses<o.lightingPasses){++lightingPass;return;}
+    if(finishedLightingPasses<(o.progressiveLighting?o.lightingPasses:1)){++lightingPass;return;}
    }
    done=true;cacheReady=!moving&&o.bloom<=0&&(!o.quality||o.samples==1)&&!o.adaptiveTiles&&!accumulate&&!(o.dof&&o.aperture>0);break;
   }continue;}
-  int x=cell%nx*block,y=cell/nx*block;++index;int sampleBlock=block;
+  int x=cell%nx*stride,y=cell/nx*stride;++index;int sampleBlock=block;
   if(moving&&o.foveated&&!o.quality){int gx=x/(2*block)*(2*block),gy=y/(2*block)*(2*block);float dx=(gx+block-W*.5f)/(W*.5f),dy=(gy+block-H*.5f)/(H*.5f);
    if(dx*dx+dy*dy>.35f){if(x!=gx||y!=gy){totals.skipped+=eyes;continue;}sampleBlock=block*2;}}
 
-  for(int e=0;e<eyes;++e){if(sampleBlock==block&&skipCell(s,x,y,e,cell))continue;
-   jobs[count++]={x,y,sampleBlock,e,stereo?(e?1.f:-1.f)*o.eyeSeparation*slider*.5f:0,moving&&o.previewLighting,moving,uint32_t(lightingPass),accumulate};}
+  for(int e=0;e<eyes;++e){
+   if(lightingOnly){const auto& record=shades[e][y*W+x];auto& stat=lightSamples[e][cell];
+    if(!record.valid||record.background){++totals.lightingSkipped;continue;}
+    bool stable=false;if(o.adaptiveLighting&&stat.count>=unsigned(o.lightingMinPasses)&&stat.count>1){
+     float variance=std::fmax(stat.m2.x,std::fmax(stat.m2.y,stat.m2.z))/(stat.count-1)/stat.count;
+     float mean=std::fmax(stat.mean.x,std::fmax(stat.mean.y,stat.mean.z));stable=std::sqrt(std::fmax(0.f,variance))<=o.lightingThreshold*(.1f+mean);}
+    if(stable&&(o.lightingRefresh==0||lightingPass%o.lightingRefresh!=0)){++totals.lightingSkipped;continue;}
+    RenderJob j{x,y,geometryBlock,e,stereo?(e?1.f:-1.f)*o.eyeSeparation*slider*.5f:0,false,false,uint32_t(lightingPass),false};j.surface=&record;jobs[count++]=j;continue;
+   }
+   if(sampleBlock==block&&skipCell(s,x,y,e,cell))continue;
+   RenderJob j{x,y,sampleBlock,e,stereo?(e?1.f:-1.f)*o.eyeSeparation*slider*.5f:0,moving&&o.previewLighting,moving,uint32_t(lightingPass),accumulate};
+   if(!moving&&!o.quality&&o.depthPrepass&&o.autoRefine&&prepassSourceBlock==0&&block>o.stillBlock)j.fast=true;
+   if(!moving&&!o.quality&&!prepassDepth[e].empty()&&prepassSourceBlock>block){int pb=prepassSourceBlock;float minimum=o.farClip,maximum=0;bool allHit=true,allSky=true;
+    int cx=x/pb,cy=y/pb;for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx){int xx=std::max(0,std::min((W-1)/pb,cx+dx))*pb,yy=std::max(0,std::min((H-1)/pb,cy+dy))*pb;int anchor=(yy/pb)*((W+pb-1)/pb)+xx/pb;float depth=prepassDepth[e][anchor];
+     allHit=allHit&&depth>0;allSky=allSky&&prepassSky[e][anchor];minimum=std::fmin(minimum,depth);maximum=std::fmax(maximum,depth);}
+    if(o.depthPrepass&&!(o.dof&&o.aperture>0)&&allHit&&maximum-minimum<minimum*o.lightingDepthTolerance)j.startDepth=minimum*o.prepassSafety;
+    j.skyLikely=allSky;
+   }
+   jobs[count++]=j;}
  }
  if(!count){if(done)finishPass(s,eyes);return;}
- if(accumulate)presentedReady=false;
+ if(accumulate||lightingOnly)presentedReady=false;
  if(batchShader&&o.parallel&&count>1)batchShader(s,rays,jobs,results,count,shaderContext);else renderJobs(s,rays,jobs,results,count);
- ++totals.batches;if(!presentedReady)++revision;
+ jobCount+=count;++totals.batches;if(!presentedReady)++revision;
  for(int i=0;i<count;++i){const auto& j=jobs[i];const auto& r=results[i];totals.add(r.profile);rayCount+=r.profile.rays;
+  if(lightingOnly){auto& stat=lightSamples[j.eye][(j.y/stride)*nx+j.x/stride];++stat.count;Vec delta=r.shade.indirect-stat.mean;stat.mean=stat.mean+delta*(1.f/stat.count);stat.m2=stat.m2+delta.multiply(r.shade.indirect-stat.mean);continue;}
   Color display=r.color;
   if(j.accumulate){auto& sum=accumulation[j.eye][j.y*W+j.x];sum=j.sample==0?r.radiance:sum+r.radiance;display=quantize(sum*(1.f/(j.sample+1)));}
   for(int yy=j.y;yy<std::min(j.y+j.block,H);++yy){int first=yy*W+j.x,last=yy*W+std::min(j.x+j.block,W);
@@ -415,7 +477,16 @@ void Renderer::step(const Scene& s,const Rays& rays,float slider){
   if(!moving)shades[j.eye][j.y*W+j.x]=r.shade;
   if(r.hit&&o.temporal&&!j.accumulate&&!(o.dof&&o.aperture>0&&!j.moving)){history[historyCursor]={r.point,r.color,r.depth*rays.tangent*j.block/H,frame,j.eye};historyCursor=(historyCursor+1)%history.size();historyCount=std::min(history.size(),historyCount+1);}
  }
+ if(lightingOnly)resolveLighting(s,eyes,jobs,count);
  if(done)finishPass(s,eyes);
 }
-float Renderer::progress(const Scene& s)const{if(done)return 1;int total=((W+block-1)/block)*((H+block-1)/block),lanes=std::min(s.settings.interlace,total);float pass=clamp(float(lane)/lanes+float(index)/total,0,1);if(!moving&&progressiveActive(s.settings)&&(block<=lightingTarget(s.settings)||!s.settings.autoRefine))return (lightingPass+pass)/s.settings.lightingPasses;return pass;}
+float Renderer::progress(const Scene& s)const{
+ if(done)return 1;
+ int stride=lightingOnly?std::max(geometryBlock,s.settings.lightingBlock):block;
+ int total=((W+stride-1)/stride)*((H+stride-1)/stride),lanes=std::min(s.settings.interlace,total);
+ float pass=clamp(float(lane)/lanes+float(index)/total,0,1);
+ if(lightingOnly)return (lightingPass+pass)/(s.settings.progressiveLighting?s.settings.lightingPasses:1);
+ if(!moving&&progressiveActive(s.settings)&&!separateActive(s.settings)&&(block<=lightingTarget(s.settings)||!s.settings.autoRefine))return (lightingPass+pass)/s.settings.lightingPasses;
+ return pass;
+}
 }

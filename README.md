@@ -163,3 +163,8 @@ upscaled stereo output. Display settings save in scene format v8; old scenes sti
 Optional RENDER -> ADAPT EMPTY SPACE sparsely probes confirmed sky during stationary
 refinement/progressive passes. Try SKY PROBE EVERY N 8; motion and Quality Mode stay
 dense. This saves void rays but can miss tiny geometry, so it defaults off. Saves are v9.
+
+Additional performance controls: cached GI with independent lighting resolution,
+variance-based progressive GI sampling, optional coarse-depth ray starts and
+adaptive sky ray budgets. See docs/PERFORMANCE.md for controls and tradeoffs.
+Scene format v10 preserves these controls and reads older scenes.

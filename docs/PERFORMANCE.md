@@ -297,3 +297,67 @@ Configurable controls: SKY PROBE EVERY N (1–64, default 8), EDGE PROBE EVERY N
 reduces sampling and raises the risk of missing detail. Raising the neighbor requirement
 makes edge classification stricter; nine is equivalent to the conservative interior test.
 FILES -> SKY CELLS SKIPPED reports this optimization separately from other tile reuse.
+
+
+## Cached and adaptive indirect lighting
+
+`SEPARATE GI RES` (LIGHT page) traces geometry/direct lighting at STILL BLOCK,
+then calculates indirect lighting using cached hits at LIGHTING BLOCK. Set
+STILL BLOCK 2 and LIGHTING BLOCK 4 or 8 to retain sharper geometry while reducing
+GI work. Depth and normal checks reject interpolation across discontinuities.
+At rejected edges GI may be weaker; decrease LIGHTING BLOCK to improve this.
+Primary hits, normals, AO, direct shadows and point lighting are reused across
+GI passes. Changed lighting tiles appear after each batch, without waiting
+for a complete lighting sweep. PROGRESSIVE LIGHTING varies hemisphere samples over LIGHTING PASSES.
+Without progressive mode, a single indirect pass is performed. Each stereo eye
+has its own cache. Motion, Quality Mode and depth of field use the original
+tracing path; cached hits cannot describe moving lens rays.
+
+`ADAPT GI SAMPLES` requires SEPARATE GI RES. Welford variance estimates the
+standard error of each cell's mean indirect lighting. After GI MIN PASSES
+(default 4), cells pause sampling when their maximum channel error is below
+GI ERROR THRESHOLD * (0.1 + maximum mean channel). Default threshold 0.03.
+GI REFRESH PASSES (default 8, 0 disables refresh) revisits stable cells to reduce
+premature convergence. Samples are averaged by their actual counts, including
+refresh samples. Finite low-discrepancy samples can underestimate variance;
+use a higher minimum and lower threshold for demanding scenes. Sky cells do
+not run GI. GI DEPTH EDGE (default 0.08 relative depth) controls interpolation
+and the depth-prepass flatness test. FILES counters report GI skips, cached
+reuse, DE queries, depth starts and short-budget retries.
+
+## Coarse depth starts and ray budgets
+
+DEPTH PREPASS (RENDER) adds a PREPASS BLOCK sweep before refinement when
+AUTO REFINE is enabled. The initial sweep uses cheap preview shading rather
+than computing normals, shadows and GI that refinement would replace. Smooth 3x3 hit neighborhoods seed finer rays from the
+minimum neighboring depth times PREPASS START FRACTION (default 0.5). The
+snapshot is separate from the image being refined. Discontinuous or sky
+neighborhoods start at the camera. Seeded misses retry from the camera.
+This is a heuristic: a small unseen foreground object can still be skipped by
+a seeded ray that hits a surface behind it. Keep off for thin Kleinian threads,
+or lower the start fraction (0 disables depth starts). Motion, Quality Mode
+and DOF do not use depth starts. Sparse prepasses can cost more than they save
+on already cheap scenes; compare DE queries and LAST FRAME MS.
+
+ADAPT RAY BUDGET limits rays in confirmed 3x3 coarse sky neighborhoods to
+SKY RAY MIN STEPS (default 16). RETRY SHORT RAYS defaults ON: uncertain rays
+continue with the full configured budget, preserving the original march
+result. This safe mode does not reduce the total work of unresolved misses.
+Turn retry OFF for the experimental performance tradeoff: unresolved rays
+become background, but are never marked as confirmed escaped sky. This can
+remove small/distant geometry. Works on stationary refinement after a coarse
+sweep, independently of ADAPT EMPTY SPACE; motion and Quality Mode stay dense.
+
+## Specialized formula loops
+
+Validated bulb-plus-scale and Menger pipelines now use fixed operation loops;
+Kleinian fold/inversion is fused and reuses squared radius between folding,
+trap calculation and inversion. Enabled stage order, parameters, Julia modes,
+repetition and terminal shapes retain their semantics. Unrecognized edited
+pipelines use the generic interpreter. Exact bulb evaluation retains its
+reference angular path. Specialized paths are automatic and differential
+unit tests compare their distance and trap values against the interpreter.
+
+All new approximation/sampling switches default OFF. These options are not
+promises of speedups: lighting reconstruction, prepasses and variance storage
+have overhead. Test on the actual console with identical scenes/settings.

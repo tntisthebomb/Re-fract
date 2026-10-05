@@ -68,6 +68,9 @@ struct PointLight {
  float intensity=5,range=8;
 };
 struct Settings {
+ bool separateLighting=false,adaptiveLighting=false,depthPrepass=false,adaptiveRayBudget=false,rayBudgetRetry=true;
+ int lightingMinPasses=4,lightingRefresh=8,prepassBlock=8,rayMinSteps=16;
+ float lightingThreshold=.03f,lightingDepthTolerance=.08f,prepassSafety=.5f;
  bool adaptiveEmpty=false,adaptiveSkyEdges=false;int emptyProbe=8,skyEdgeProbe=2,skyNeighbors=5,emptyRefresh=4;
  int stillBlock=1,upscale=0;
  int steps=64,previewBlock=8,interlace=4,ao=0,shadow=0,samples=1;
@@ -137,11 +140,11 @@ SurfaceMesh surfaceMesh(const Scene& scene,const std::vector<Color>& colors,cons
 Color trace(const Scene& s,const Rays& rays,float x,float y,float eye);
 Color shadeCell(const Scene& s,const Rays& rays,int x,int y,int block,float eye,int count);
 struct Profile {
- uint64_t rays=0,steps=0,distanceQueries=0,shadingQueries=0,reused=0,skipped=0,relaxFallbacks=0,batches=0,skySkipped=0;
+ uint64_t rays=0,steps=0,distanceQueries=0,shadingQueries=0,reused=0,skipped=0,relaxFallbacks=0,batches=0,skySkipped=0,lightingSkipped=0,budgetRetries=0,depthStarts=0;
  void add(const Profile& p);
 };
-struct RenderJob {int x=0,y=0,block=1,eye=0;float offset=0;bool fast=false;bool moving=false;uint32_t sample=0;bool accumulate=false;};
-struct ShadeRecord {float trap=0,depth=0,lighting=0,specular=0;bool valid=false;Vec indirect{},localDiffuse{},localSpecular{};bool background=false,escaped=false;};
+struct RenderJob {int x=0,y=0,block=1,eye=0;float offset=0;bool fast=false;bool moving=false;uint32_t sample=0;bool accumulate=false;float startDepth=0;bool skyLikely=false;const struct ShadeRecord* surface=nullptr;};
+struct ShadeRecord {float trap=0,depth=0,lighting=0,specular=0;bool valid=false;Vec indirect{},localDiffuse{},localSpecular{};bool background=false,escaped=false;Vec normal{};};
 Color recolorSample(const Settings& settings,const ShadeRecord& record);
 struct RenderResult {ShadeRecord shade;Color color;Vec point;float depth=0;bool hit=false;Profile profile;Vec radiance{};};
 RenderResult renderJob(const Scene& s,const Rays& rays,const RenderJob& job);
@@ -158,6 +161,11 @@ class Renderer {
  std::array<std::vector<ShadeRecord>,2> shades;
  std::array<std::vector<Vec>,2> accumulation;
  int lightingPass=0,finishedLightingPasses=0;
+ bool lightingOnly=false;int geometryBlock=0,prepassSourceBlock=0;
+ struct LightSample {Vec mean{},m2{};uint32_t count=0;};
+ std::array<std::vector<LightSample>,2> lightSamples;
+ std::array<std::vector<float>,2> prepassDepth;std::array<std::vector<uint8_t>,2> prepassSky;
+ void resolveLighting(const Scene& scene,int eyes,const RenderJob* updated,int count);
  bool cacheReady=false;
  bool passTiming=false;std::chrono::steady_clock::time_point passStart;
  float lastPassMs=0,lastLiveMs=0;int lastPassBlock=0,lastLiveBlock=0,lastPassEyes=0;
@@ -168,7 +176,7 @@ class Renderer {
  float eyeOffset=0;
  float averageJobMs=0,frameMs=0;Profile totals;
  int block=8,lane=0,index=0;bool moving=false,done=false;
- uint64_t rayCount=0,revision=1;
+ uint64_t rayCount=0,jobCount=0,revision=1;
  BatchShader batchShader=nullptr;void* shaderContext=nullptr;
  ParallelFor parallelFor=nullptr;void* loopContext=nullptr;
  void reproject(const Scene& s,const Rays& rays,float slider);
@@ -189,6 +197,7 @@ class Renderer {
  bool complete()const{return done;}
  int currentBlock()const{return block;}
  uint64_t rays()const{return rayCount;}
+ uint64_t jobs()const{return jobCount;}
  uint64_t imageRevision()const{return revision;}
  const Profile& profile()const{return totals;}
  void resetProfile(){totals={};}

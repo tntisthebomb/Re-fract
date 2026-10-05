@@ -41,6 +41,9 @@ bool Formula::validate(std::string& error){
  kernel=0;
  auto is=[&](int n,Kind kind){return stages[active[n]].kind==kind;};
  if(activeCount==3&&is(0,Kind::BoxFold)&&is(1,Kind::SphereFold)&&is(2,Kind::Scale))kernel=1;
+ else if(activeCount==2&&is(0,Kind::Bulb)&&is(1,Kind::Scale))kernel=7;
+ else if(activeCount==1&&is(0,Kind::Bulb))kernel=5;
+ else if(activeCount==1&&is(0,Kind::Menger))kernel=6;
  else if(activeCount==2&&is(0,Kind::KleinianFold)&&is(1,Kind::Inversion))kernel=4;
 
 
@@ -147,7 +150,7 @@ template<bool Trap> Sample evaluateGenericDistance(const Formula& f,Vec p,bool e
      z=z*k;dr*=k;break;
     }
     case Kind::Bulb:{
-     r=z.length();if(r<1e-12f){z={};dr=std::fmax(dr,1e-12f);break;}
+     float r=z.length();if(r<1e-12f){z={};dr=std::fmax(dr,1e-12f);break;}
      float power=radialPower(r,s.a-1,s.integerPower);
      // Angular multipliers can stretch the transform beyond the standard bulb.
      dr*=power*s.stretch;
@@ -206,6 +209,31 @@ template<bool Trap> Sample evaluateGenericDistance(const Formula& f,Vec p,bool e
 }
 template<Kind Fixed,bool Trap> inline bool applyStage(const Formula& f,const Stage& s,Vec& z,Vec c,float& dr,float& trap){
    switch(Fixed){
+    case Kind::Bulb:{
+     float r=z.length();if(r<1e-12f){z={};dr=std::fmax(dr,1e-12f);break;}
+     float power=radialPower(r,s.a-1,s.integerPower);
+     // Angular multipliers can stretch the transform beyond the standard bulb.
+     dr*=power*s.stretch;
+     float nr=power*r;
+     if(f.algebraicBulb&&(s.a==2||s.a==4||s.a==8||s.a==16)&&s.b==1&&s.c==1){
+      float radial=std::sqrt(z.x*z.x+z.y*z.y),st=radial/r,ct=z.z/r;
+      float sp=radial>0?z.y/radial:0,cp=radial>0?z.x/radial:1;
+      for(int n=int(s.a);n>1;n>>=1){float ns=2*st*ct,nc=ct*ct-st*st;st=ns;ct=nc;ns=2*sp*cp;nc=cp*cp-sp*sp;sp=ns;cp=nc;}
+      z={nr*st*cp,nr*st*sp,nr*ct};
+     }else{
+      float theta=std::acos(clamp(z.z/r,-1,1))*s.thetaPower,phi=std::atan2(z.y,z.x)*s.phiPower,sinTheta=std::sin(theta);
+      z={nr*sinTheta*std::cos(phi),nr*sinTheta*std::sin(phi),nr*std::cos(theta)};
+     }break;
+    }
+    case Kind::Menger:{
+     z={std::fabs(z.x),std::fabs(z.y),std::fabs(z.z)};
+     if(z.x<z.y)std::swap(z.x,z.y);
+     if(z.x<z.z)std::swap(z.x,z.z);
+     if(z.y<z.z)std::swap(z.y,z.z);
+     z=z*s.a-Vec{s.b,s.b,0}*(s.a-1);
+     float cut=s.c*(s.a-1);if(z.z>cut*.5f)z.z-=cut;dr*=std::fabs(s.a);break;
+    }
+
     case Kind::KleinianFold:{z={2*clamp(z.x,-s.a,s.a)-z.x,2*clamp(z.y,-s.b,s.b)-z.y,2*clamp(z.z,-s.c,s.c)-z.z};break;}
     case Kind::Inversion:{float k=std::fmax(1.f,s.minimum2/std::fmax(z.dot(z),1e-12f));z=z*k;dr*=k;break;}
     case Kind::BoxFold:{float limit=std::fabs(s.a);auto fold=[limit](float v){float bounded=v< -limit?-limit:v>limit?limit:v;return 2*bounded-v;};z={fold(z.x),fold(z.y),fold(z.z)};break;}
@@ -232,7 +260,17 @@ template<bool Trap,int Kernel=0> Sample evaluateDistance(const Formula& f,Vec p)
   if constexpr(Kernel==1){
    if(!applyStage<Kind::BoxFold,Trap>(f,f.stages[f.active[0]],z,c,dr,trap)||!applyStage<Kind::SphereFold,Trap>(f,f.stages[f.active[1]],z,c,dr,trap)||!applyStage<Kind::Scale,Trap>(f,f.stages[f.active[2]],z,c,dr,trap))return {0,trap,false};
   }else if constexpr(Kernel==4){
-   if(!applyStage<Kind::KleinianFold,Trap>(f,f.stages[f.active[0]],z,c,dr,trap)||!applyStage<Kind::Inversion,Trap>(f,f.stages[f.active[1]],z,c,dr,trap))return {0,trap,false};
+   const auto& fold=f.stages[f.active[0]];const auto& inversion=f.stages[f.active[1]];
+   auto reflect=[](float v,float extent){return 2*(v< -extent?-extent:v>extent?extent:v)-v;};
+   z={reflect(z.x,fold.a),reflect(z.y,fold.b),reflect(z.z,fold.c)};
+   float squared=z.dot(z);if constexpr(Trap)trap=std::fmin(trap,squared);
+   float k=std::fmax(1.f,inversion.minimum2/std::fmax(squared,1e-12f));z=z*k;dr*=k;
+   if(!std::isfinite(z.x)||!std::isfinite(z.y)||!std::isfinite(z.z)||!std::isfinite(dr)||dr>1e30f)return {0,trap,false};
+   if constexpr(Trap)trap=std::fmin(trap,z.dot(z));
+  }else if constexpr(Kernel==7){
+   if(!applyStage<Kind::Bulb,Trap>(f,f.stages[f.active[0]],z,c,dr,trap)||!applyStage<Kind::Scale,Trap>(f,f.stages[f.active[1]],z,c,dr,trap))return {0,trap,false};
+  }else if constexpr(Kernel==5||Kernel==6){
+   if(!applyStage<Kernel==5?Kind::Bulb:Kind::Menger,Trap>(f,f.stages[f.active[0]],z,c,dr,trap))return {0,trap,false};
   }else if constexpr(Kernel==3){
    if(!applyStage<Kind::Tetra,Trap>(f,f.stages[f.active[0]],z,c,dr,trap)||!applyStage<Kind::Scale,Trap>(f,f.stages[f.active[1]],z,c,dr,trap)||!applyStage<Kind::Offset,Trap>(f,f.stages[f.active[2]],z,c,dr,trap))return {0,trap,false};
   }else return evaluateGenericDistance<Trap>(f,p);
@@ -261,6 +299,9 @@ float repeatBoundaryStep(const Formula& f,Vec point,Vec direction){
 }
 template<bool Trap> Sample dispatch(const Formula& f,Vec p,bool exact=false){
  if(f.kernel==1)return evaluateDistance<Trap,1>(f,p);
+ if(f.kernel==7&&!exact)return evaluateDistance<Trap,7>(f,p);
+ if(f.kernel==5&&!exact)return evaluateDistance<Trap,5>(f,p);
+ if(f.kernel==6)return evaluateDistance<Trap,6>(f,p);
  if(f.kernel==4)return evaluateDistance<Trap,4>(f,p);
  if(f.kernel==3)return evaluateDistance<Trap,3>(f,p);
  return evaluateGenericDistance<Trap>(f,p,exact);
