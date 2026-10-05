@@ -236,3 +236,31 @@ accumulation uses the selected preview block directly. This improves feedback, b
 GI remains CPU tracing and is not instantaneous realtime global illumination.
 
 The vendored JPEG bit accumulator uses unsigned shifts to avoid signed-shift undefined behavior.
+
+## Visible sky and optional upscaling
+
+COLOR -> SKY COLOR now controls the visible miss background, fog color and existing
+indirect skylight. Exposure affects the visible sky too. Cached background records
+let sky/exposure edits recolor a completed single-sample image when indirect lighting
+is disabled. Invalid formula pixels remain diagnostic magenta.
+
+RENDER -> STILL BLOCK selects the stationary refinement endpoint (1/2/4/8/16).
+At 2X the mono ray grid is 200x120, displayed as 400x240. AUTO REFINE must be on
+for a larger preview block to refine down to that endpoint. With AUTO REFINE off,
+the selected PREVIEW BLOCK is the render resolution; this now includes 2X.
+QUALITY MODE overrides the endpoint and renders 1X. Progressive lighting uses the
+coarser of STILL BLOCK and LIGHTING BLOCK; select LIGHTING BLOCK 2 for 2X GI.
+
+UPSCALING selects NEAREST, BILINEAR or BICUBIC (Catmull-Rom). The separable filters
+use precomputed weights, clamp at image edges, and share the existing parallel worker.
+They reconstruct from block-center samples without extra fractal evaluations. Each eye
+is filtered independently. Screenshots and PPM exports use the displayed upscaled image;
+GPU surface capture continues to use the original depth/color geometry anchors.
+
+Upscaling runs once per completed resolution pass and is included in LAST FRAME MS.
+During moving sweeps, the preceding finished smooth image remains visible until the
+next sweep completes. Progressive accumulation batches may show raw block previews
+between filtered completed passes. No additional smoothing occurs at 1X. Bicubic can
+soften narrow connections or ring at high-contrast edges; compare bilinear or nearest.
+Lazy display buffers and the separable temporary buffer add about 1.2MiB for stereo 2X.
+Scene format v8 reads v1-v7; earlier scenes default to nearest and a 1X still endpoint.

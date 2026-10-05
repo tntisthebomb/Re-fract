@@ -44,7 +44,8 @@ bool GpuSurface::draw(const Scene& s,float slider){
  for(int eye=0;eye<eyes;++eye){float offset=eyes==2?(eye?1.f:-1.f)*s.settings.eyeSeparation*slider*.5f:0;
   auto matrix=meshProjection(s,offset,origin);C3D_Mtx projection;
   for(int row=0;row<4;++row){projection.r[row].x=matrix[row*4];projection.r[row].y=matrix[row*4+1];projection.r[row].z=matrix[row*4+2];projection.r[row].w=matrix[row*4+3];}
-  C3D_RenderTargetClear(targets[eye],C3D_CLEAR_ALL,0x060706FF,0);C3D_FrameDrawOn(targets[eye]);
+  uint32_t sky=(uint32_t(clamp(s.settings.skyColor.x*s.settings.exposure,0,1)*255)<<24)|(uint32_t(clamp(s.settings.skyColor.y*s.settings.exposure,0,1)*255)<<16)|(uint32_t(clamp(s.settings.skyColor.z*s.settings.exposure,0,1)*255)<<8)|255;
+  C3D_RenderTargetClear(targets[eye],C3D_CLEAR_ALL,sky,0);C3D_FrameDrawOn(targets[eye]);
   C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projectionLocation,&projection);C3D_DrawElements(GPU_TRIANGLES,count,C3D_UNSIGNED_SHORT,indices);
  }
  // VBO/IBO were flushed at upload; only flush newly emitted command lists.

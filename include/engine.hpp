@@ -68,6 +68,7 @@ struct PointLight {
  float intensity=5,range=8;
 };
 struct Settings {
+ int stillBlock=1,upscale=0;
  int steps=64,previewBlock=8,interlace=4,ao=0,shadow=0,samples=1;
  float epsilon=.002f,safety=.65f,farClip=20,fov=55;
  float eyeSeparation=.065f,convergence=4,exposure=1,fog=.035f;
@@ -139,14 +140,16 @@ struct Profile {
  void add(const Profile& p);
 };
 struct RenderJob {int x=0,y=0,block=1,eye=0;float offset=0;bool fast=false;bool moving=false;uint32_t sample=0;bool accumulate=false;};
-struct ShadeRecord {float trap=0,depth=0,lighting=0,specular=0;bool valid=false;Vec indirect{},localDiffuse{},localSpecular{};};
+struct ShadeRecord {float trap=0,depth=0,lighting=0,specular=0;bool valid=false;Vec indirect{},localDiffuse{},localSpecular{};bool background=false;};
 Color recolorSample(const Settings& settings,const ShadeRecord& record);
 struct RenderResult {ShadeRecord shade;Color color;Vec point;float depth=0;bool hit=false;Profile profile;Vec radiance{};};
 RenderResult renderJob(const Scene& s,const Rays& rays,const RenderJob& job);
 void renderJobs(const Scene& s,const Rays& rays,const RenderJob* jobs,RenderResult* results,int count);
 using BatchShader=void (*)(const Scene&,const Rays&,const RenderJob*,RenderResult*,int,void*);
+void upscaleImage(const std::vector<Color>& source,std::vector<Color>& output,int block,int method,ParallelFor loop=nullptr,void* context=nullptr);
 class Renderer {
- std::array<std::vector<Color>,2> pixels;
+ std::array<std::vector<Color>,2> pixels,presented;bool presentedReady=false;
+ void present(const Settings& settings,int eyes);
  std::array<std::vector<float>,2> depths;
  std::array<std::vector<uint8_t>,2> ages;
  std::array<std::vector<ShadeRecord>,2> shades;
@@ -179,7 +182,7 @@ class Renderer {
  void endFrame(const Scene& s,float totalMs,float renderMs,uint64_t jobs);
  // A bounded batch can be split between cores in mono and stereo modes.
  void step(const Scene& s,const Rays& rays,float slider);
- const std::vector<Color>& image(int eye)const{return pixels[activeEyes==1?0:eye];}
+ const std::vector<Color>& image(int eye)const{return presentedReady?presented[activeEyes==1?0:eye]:pixels[activeEyes==1?0:eye];}
  bool complete()const{return done;}
  int currentBlock()const{return block;}
  uint64_t rays()const{return rayCount;}

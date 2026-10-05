@@ -154,3 +154,8 @@ START saves JPEG screenshots and, with active stereo, a 3D MPO in
 `sdmc:/3ds/Re-fract/screenshots/`. Files include a top-only JPEG and a JPEG of both
 screens. No Camera album registration is required. FILES -> Exit App replaces START
 as the exit action. Scene files save as v7 and read v1–v6. See docs/PERFORMANCE.md.
+
+Sky Color now changes the visible background and fog. For a faster stationary image,
+set RENDER -> STILL BLOCK 2, AUTO REFINE ON, QUALITY MODE OFF and UPSCALING BICUBIC.
+Use LIGHTING BLOCK 2 too if progressive lighting is enabled. Screenshots preserve the
+upscaled stereo output. Display settings save in scene format v8; old scenes still load.

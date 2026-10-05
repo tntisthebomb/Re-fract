@@ -161,7 +161,8 @@ int main(){
    [&,values](int dir){auto it=std::find(values.begin(),values.end(),v);int i=it==values.end()?0:int(it-values.begin());i=(i+dir+int(values.size()))%int(values.size());v=values[i];changed=true;},{}});};
   if(tab==0){for(int i=0;i<PresetCount;++i)action(presetName(i),presetIndex==i?"CURRENT":"A LOAD",[&,i](){scene.formula=preset(i);presetIndex=i;stageIndex=0;scene.camera=presetCamera(i);if(i>=24)scene.settings=presetSettings(i);scene.settings.farClip=40;scene.settings.convergence=-scene.camera.position.z;changed=true;status="PRESET LOADED";});}
   else if(tab==1){Settings& v=scene.settings;
-   boolean("QUALITY MODE",v.quality);choice("PREVIEW BLOCK",v.previewBlock,{4,8,16});integer("INTERLACE LANES",v.interlace,1,1,8);
+   boolean("QUALITY MODE",v.quality);choice("PREVIEW BLOCK",v.previewBlock,{2,4,8,16});choice("STILL BLOCK",v.stillBlock,{1,2,4,8,16});
+   const char* scaling[]={"NEAREST","BILINEAR","BICUBIC"};fields.push_back({{"UPSCALING",scaling[v.upscale]},[&](int d){v.upscale=(v.upscale+d+3)%3;changed=true;},{}});integer("INTERLACE LANES",v.interlace,1,1,8);
    integer("RAY STEPS",v.steps,8,8,256);real("HIT EPSILON",v.epsilon,.0005f,.000001f,.05f);boolean("ZOOM PRECISION EXP",v.adaptivePrecision);real("MIN HIT EPSILON",v.minEpsilon,.000001f,.000001f,.001f);real("PIXEL TOLERANCE",v.pixelTolerance,.05f,.05f,2);real("STEP SAFETY",v.safety,.05f,.05f,1);
    real("FAR CLIP",v.farClip,1,1,100);real("FRAME BUDGET MS",v.budgetMs,1,1,20);boolean("AUTO REFINE",v.autoRefine);boolean("ADAPT DETAIL EXP",v.adaptiveDetail);integer("MOVE ITERATIONS",v.previewIterations,1,1,32);integer("DETAIL ITERATION CAP",v.detailIterations,1,1,32);
    boolean("DEPTH OF FIELD",v.dof);real("LENS APERTURE",v.aperture,.01f,0,1);real("FOCUS DISTANCE",v.focusDistance,.1f,.001f,100);choice("LENS SAMPLES",v.dofSamples,{1,2,4,8,16});
@@ -311,7 +312,7 @@ int main(){
   gfxSet3D(activeStereo);
   if(changed&&materialEditOnly&&before&&tab==4&&!motion&&!meshNavigation&&now>=sliderUntil&&!sliderChanged){
    const std::string& label=fields[selected].row.label;
-   bool material=label=="PALETTE"||label=="CUSTOM GRADIENT"||label.rfind("GRADIENT ",0)==0||label=="AUTO FIT GRADIENT"||label=="BOUNDED COLOR MAP"||label=="COLOR EMISSION"||label=="BLOOM HALO"||label=="GRADIENT SCALE"||label=="GRADIENT OFFSET"||label=="REPEAT GRADIENT"||label=="EXPOSURE"||label=="FOG DENSITY";
+   bool material=label=="PALETTE"||label=="CUSTOM GRADIENT"||label.rfind("GRADIENT ",0)==0||label=="SKY COLOR"||label=="AUTO FIT GRADIENT"||label=="BOUNDED COLOR MAP"||label=="COLOR EMISSION"||label=="BLOOM HALO"||label=="GRADIENT SCALE"||label=="GRADIENT OFFSET"||label=="REPEAT GRADIENT"||label=="EXPOSURE"||label=="FOG DENSITY";
    if(material&&renderer.recolor(scene)){changed=false;status="COLOR UPDATED / GEOMETRY REUSED";}
   }
   if(changed&&meshNavigation){gpuSurface.synchronize();meshNavigation=false;topCopies[0].reset();topCopies[1].reset();}
