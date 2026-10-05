@@ -3,7 +3,7 @@
 
 namespace rf {
 const char* kindName(Kind k){
- const char* names[]={"BOX FOLD","SPHERE FOLD","BULB POWER","SCALE + C","ROTATE XYZ","OFFSET","ABSOLUTE","SORT XYZ","MENGER","TETRA FOLD","EXPRESSION"};
+ const char* names[]={"BOX FOLD","SPHERE FOLD","BULB POWER","SCALE + C","ROTATE XYZ","OFFSET","ABSOLUTE","SORT XYZ","MENGER","TETRA FOLD","EXPRESSION","KLEINIAN FOLD","SPHERE INVERSION"};
  int n=int(k);return n>=0&&n<int(Kind::Count)?names[n]:"INVALID";
 }
 bool Stage::compile(std::string& error){
@@ -20,7 +20,7 @@ bool Stage::compile(std::string& error){
 bool Formula::validate(std::string& error){
  if(stages.empty()||stages.size()>MaxStages){error="Use 1 to 12 stages";return false;}
  if(iterations<1||iterations>32||!std::isfinite(bailout)||bailout<2||bailout>256||
- !std::isfinite(derivativeScale)||derivativeScale<1||derivativeScale>100||terminal<0||terminal>2||
+ !std::isfinite(derivativeScale)||derivativeScale<1||derivativeScale>100||terminal<0||terminal>3||
  !std::isfinite(terminalRadius)||terminalRadius<.01f||terminalRadius>100){error="Invalid formula limits";return false;}
  if(!std::isfinite(constant.x)||!std::isfinite(constant.y)||!std::isfinite(constant.z)){error="Invalid Julia constant";return false;}
  auto periodValid=[](float v){return std::isfinite(v)&&(v==0||(v>=.01f&&v<=1000));};
@@ -31,6 +31,8 @@ bool Formula::validate(std::string& error){
     std::fabs(s.a)>100||std::fabs(s.b)>100||std::fabs(s.c)>100){error="Invalid stage parameter";return false;}
   if(s.kind==Kind::Bulb&&(s.a<1.1f||s.a>16||std::fabs(s.b)>4||std::fabs(s.c)>4)){error="Bulb: power 1.1..16, angles -4..4";return false;}
   if(s.kind==Kind::SphereFold&&(s.a<=.0001f||s.b<s.a)){error="Sphere radii: 0 < minimum <= fixed";return false;}
+  if(s.kind==Kind::KleinianFold&&(s.a<=0||s.b<=0||s.c<=0)){error="Kleinian fold extents must be positive";return false;}
+  if(s.kind==Kind::Inversion&&(s.a<.001f||s.a>10)){error="Inversion radius: 0.001..10";return false;}
   if(s.kind==Kind::Menger&&s.a<1.1f){error="Menger scale must exceed 1.1";return false;}
   if(!s.compile(error))return false;
  }
@@ -39,6 +41,7 @@ bool Formula::validate(std::string& error){
  kernel=0;
  auto is=[&](int n,Kind kind){return stages[active[n]].kind==kind;};
  if(activeCount==3&&is(0,Kind::BoxFold)&&is(1,Kind::SphereFold)&&is(2,Kind::Scale))kernel=1;
+ else if(activeCount==2&&is(0,Kind::KleinianFold)&&is(1,Kind::Inversion))kernel=4;
 
 
  else if(activeCount==3&&is(0,Kind::Tetra)&&is(1,Kind::Scale)&&is(2,Kind::Offset))kernel=3;
@@ -52,7 +55,7 @@ float radialPower(float r,float p,int n){
 }
 }
 const char* presetName(int n){
- const char* names[]={"MANDELBULB / 8","MANDELBULB / 2","MANDELBULB / 3","MANDELBULB / 6","MANDELBULB / 12","JULIA BULB","MANDELBOX","NEGATIVE BOX","CORRIDOR BOX","SPHERE NETWORK","MENGER SPONGE","TWISTED MENGER","SIERPINSKI TETRA","KALEIDO TETRA","BOX-BULB HYBRID","FOLDED JULIA BOX","EXPRESSION JULIA","INVERTED BOX","MANDELBULB / 4","MANDELBULB / 5","ABSOLUTE BULB","ROTATED NEGATIVE BOX","TWISTED JULIA BULB","MENGER / WIDE CUT","RUBY CHAMBERS","BLUE SPHERE VAULT","GOLD BOX CORRIDOR","MENGER COLONNADE","TWISTED BOX HALL","INVERTED BUBBLE HALL","TETRA GALLERY","JULIA BULB ARCADE","BULB GARDEN","ABSOLUTE BULB / 5","BOX-BULB / 4","NEGATIVE BOX / DEEP"};
+ const char* names[]={"MANDELBULB / 8","MANDELBULB / 2","MANDELBULB / 3","MANDELBULB / 6","MANDELBULB / 12","JULIA BULB","MANDELBOX","NEGATIVE BOX","CORRIDOR BOX","SPHERE NETWORK","MENGER SPONGE","TWISTED MENGER","SIERPINSKI TETRA","KALEIDO TETRA","BOX-BULB HYBRID","FOLDED JULIA BOX","EXPRESSION JULIA","INVERTED BOX","MANDELBULB / 4","MANDELBULB / 5","ABSOLUTE BULB","ROTATED NEGATIVE BOX","TWISTED JULIA BULB","MENGER / WIDE CUT","RUBY CHAMBERS","BLUE SPHERE VAULT","GOLD BOX CORRIDOR","MENGER COLONNADE","TWISTED BOX HALL","INVERTED BUBBLE HALL","TETRA GALLERY","JULIA BULB ARCADE","BULB GARDEN","ABSOLUTE BULB / 5","BOX-BULB / 4","NEGATIVE BOX / DEEP","KLEINIAN CHAMBERS","KLEINIAN CORRIDOR","KLEINIAN DROPS","KLEINIAN GALLERY"};
  return names[(n%PresetCount+PresetCount)%PresetCount];
 }
 Camera presetCamera(int n){
@@ -65,6 +68,7 @@ Camera presetCamera(int n){
  if(n==30)c.position={2.5f,0,-3};
  if(n==31||n==32)c.position={1.75f,.3f,-1.75f};
  if(n==35)c.position.z=-4.5f;
+ if(n>=36){c.position={0,.25f,-3.2f};c.pitch=-.08f;c.speed=.2f;}
  return c;
 }
 Formula preset(int n){
@@ -106,6 +110,14 @@ Formula preset(int n){
  }else if(n==34){f.iterations=10;f.logarithmic=true;f.stages={stage(Kind::BoxFold,1),stage(Kind::Bulb,4,1,1),stage(Kind::Scale,1,1)};
  }else if(n==35){f.iterations=20;f.bailout=32;f.stages={stage(Kind::BoxFold,1),stage(Kind::SphereFold,.5f,1),stage(Kind::Scale,-1.5f,1)};
  }
+ if(n>=36){
+  f.iterations=12;f.bailout=256;f.terminal=3;f.terminalRadius=.8f;
+  f.stages={stage(Kind::KleinianFold,.63248f,.78632f,.775f),stage(Kind::Inversion,std::sqrt(.70968f))};
+  f.derivativeScale=1.25f;
+  if(n==37){f.stages[0].a=.9f;f.stages[0].b=.65f;f.stages[0].c=.9f;f.terminalRadius=.65f;}
+  if(n==38){f.stages[0].a=.90756f;f.stages[0].b=.92436f;f.stages[0].c=.90756f;f.stages[1].a=1;f.terminalRadius=.15f;}
+  if(n==39){f.stages[0].a=.8f;f.stages[0].b=.8f;f.stages[0].c=1.1f;f.stages.push_back(stage(Kind::Offset,0,0,.12f));f.terminalRadius=.55f;}
+ }
  std::string error;f.validate(error);return f;
 }
 Settings presetSettings(int n){
@@ -118,6 +130,7 @@ Settings presetSettings(int n){
   if(n==28||n==31){s.gradientLow={.12f,.015f,.2f};s.gradientHigh={.85f,.5f,.95f};}
   if(n==32||n==33){s.gradientLow={.02f,.15f,.05f};s.gradientHigh={.7f,.95f,.3f};}
  }
+ if(n>=36){s.safety=.45f;s.epsilon=.0005f;s.steps=128;s.farClip=20;s.fog=.025f;s.gradientLow={.025f,.06f,.12f};s.gradientHigh={.65f,.85f,1};if(n==38){s.gradientLow={.1f,.005f,.015f};s.gradientHigh={1,.18f,.08f};}}
  return s;
 }
 template<bool Trap> Sample evaluateGenericDistance(const Formula& f,Vec p,bool exact=false){
@@ -126,6 +139,8 @@ template<bool Trap> Sample evaluateGenericDistance(const Formula& f,Vec p,bool e
   if(z.dot(z)>f.bailout*f.bailout)break;
   for(int stageIndex=0;stageIndex<f.activeCount;++stageIndex){const Stage& s=f.stages[f.active[stageIndex]];
    switch(s.kind){
+    case Kind::KleinianFold:{z={2*clamp(z.x,-s.a,s.a)-z.x,2*clamp(z.y,-s.b,s.b)-z.y,2*clamp(z.z,-s.c,s.c)-z.z};break;}
+    case Kind::Inversion:{float k=std::fmax(1.f,s.minimum2/std::fmax(z.dot(z),1e-12f));z=z*k;dr*=k;break;}
     case Kind::BoxFold:{float limit=std::fabs(s.a);z={2*clamp(z.x,-limit,limit)-z.x,2*clamp(z.y,-limit,limit)-z.y,2*clamp(z.z,-limit,limit)-z.z};break;}
     case Kind::SphereFold:{float r2=z.dot(z),min2=s.minimum2,fixed2=s.fixed2;
      float k=r2<min2?s.innerScale:r2<fixed2?fixed2/std::fmax(r2,1e-12f):1;
@@ -180,6 +195,9 @@ template<bool Trap> Sample evaluateGenericDistance(const Formula& f,Vec p,bool e
  if(f.terminal==1){Vec q{std::fabs(z.x)-f.terminalRadius,std::fabs(z.y)-f.terminalRadius,std::fabs(z.z)-f.terminalRadius};
   Vec outside{std::fmax(q.x,0.f),std::fmax(q.y,0.f),std::fmax(q.z,0.f)};
   d=(outside.length()+std::fmin(std::fmax(q.x,std::fmax(q.y,q.z)),0.f))/std::fmax(dr,1e-12f);
+ }else if(f.terminal==3){
+  float xy=std::sqrt(z.x*z.x+z.y*z.y);
+  d=std::fmax(xy-f.terminalRadius,std::fabs(xy*z.z)/std::fmax(r,1e-12f))/std::fmax(dr,1e-12f);
  }else if(f.terminal==2){
   d=(std::fmax(-z.x-z.y-z.z,std::fmax(-z.x+z.y+z.z,std::fmax(z.x-z.y+z.z,z.x+z.y-z.z)))-f.terminalRadius)*.57735027f/std::fmax(dr,1e-12f);
  }
@@ -188,6 +206,8 @@ template<bool Trap> Sample evaluateGenericDistance(const Formula& f,Vec p,bool e
 }
 template<Kind Fixed,bool Trap> inline bool applyStage(const Formula& f,const Stage& s,Vec& z,Vec c,float& dr,float& trap){
    switch(Fixed){
+    case Kind::KleinianFold:{z={2*clamp(z.x,-s.a,s.a)-z.x,2*clamp(z.y,-s.b,s.b)-z.y,2*clamp(z.z,-s.c,s.c)-z.z};break;}
+    case Kind::Inversion:{float k=std::fmax(1.f,s.minimum2/std::fmax(z.dot(z),1e-12f));z=z*k;dr*=k;break;}
     case Kind::BoxFold:{float limit=std::fabs(s.a);auto fold=[limit](float v){float bounded=v< -limit?-limit:v>limit?limit:v;return 2*bounded-v;};z={fold(z.x),fold(z.y),fold(z.z)};break;}
     case Kind::SphereFold:{float r2=z.dot(z),min2=s.minimum2,fixed2=s.fixed2;
      float k=r2<min2?s.innerScale:r2<fixed2?fixed2/std::fmax(r2,1e-12f):1;
@@ -211,6 +231,8 @@ template<bool Trap,int Kernel=0> Sample evaluateDistance(const Formula& f,Vec p)
   if(z.dot(z)>f.bailout*f.bailout)break;
   if constexpr(Kernel==1){
    if(!applyStage<Kind::BoxFold,Trap>(f,f.stages[f.active[0]],z,c,dr,trap)||!applyStage<Kind::SphereFold,Trap>(f,f.stages[f.active[1]],z,c,dr,trap)||!applyStage<Kind::Scale,Trap>(f,f.stages[f.active[2]],z,c,dr,trap))return {0,trap,false};
+  }else if constexpr(Kernel==4){
+   if(!applyStage<Kind::KleinianFold,Trap>(f,f.stages[f.active[0]],z,c,dr,trap)||!applyStage<Kind::Inversion,Trap>(f,f.stages[f.active[1]],z,c,dr,trap))return {0,trap,false};
   }else if constexpr(Kernel==3){
    if(!applyStage<Kind::Tetra,Trap>(f,f.stages[f.active[0]],z,c,dr,trap)||!applyStage<Kind::Scale,Trap>(f,f.stages[f.active[1]],z,c,dr,trap)||!applyStage<Kind::Offset,Trap>(f,f.stages[f.active[2]],z,c,dr,trap))return {0,trap,false};
   }else return evaluateGenericDistance<Trap>(f,p);
@@ -219,6 +241,9 @@ template<bool Trap,int Kernel=0> Sample evaluateDistance(const Formula& f,Vec p)
  if(f.terminal==1){Vec q{std::fabs(z.x)-f.terminalRadius,std::fabs(z.y)-f.terminalRadius,std::fabs(z.z)-f.terminalRadius};
   Vec outside{std::fmax(q.x,0.f),std::fmax(q.y,0.f),std::fmax(q.z,0.f)};
   d=(outside.length()+std::fmin(std::fmax(q.x,std::fmax(q.y,q.z)),0.f))/std::fmax(dr,1e-12f);
+ }else if(f.terminal==3){
+  float xy=std::sqrt(z.x*z.x+z.y*z.y);
+  d=std::fmax(xy-f.terminalRadius,std::fabs(xy*z.z)/std::fmax(r,1e-12f))/std::fmax(dr,1e-12f);
  }else if(f.terminal==2){
   d=(std::fmax(-z.x-z.y-z.z,std::fmax(-z.x+z.y+z.z,std::fmax(z.x-z.y+z.z,z.x+z.y-z.z)))-f.terminalRadius)*.57735027f/std::fmax(dr,1e-12f);
  }
@@ -236,6 +261,7 @@ float repeatBoundaryStep(const Formula& f,Vec point,Vec direction){
 }
 template<bool Trap> Sample dispatch(const Formula& f,Vec p,bool exact=false){
  if(f.kernel==1)return evaluateDistance<Trap,1>(f,p);
+ if(f.kernel==4)return evaluateDistance<Trap,4>(f,p);
  if(f.kernel==3)return evaluateDistance<Trap,3>(f,p);
  return evaluateGenericDistance<Trap>(f,p,exact);
 }

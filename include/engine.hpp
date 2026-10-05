@@ -29,7 +29,7 @@ struct Expression {
  bool evaluate(Vec z,Vec c,Dual& result)const;
  bool evaluateGeneric(Vec z,Vec c,Dual& result)const;
 };
-enum class Kind {BoxFold,SphereFold,Bulb,Scale,Rotate,Offset,Absolute,Sort,Menger,Tetra,Expression,Count};
+enum class Kind {BoxFold,SphereFold,Bulb,Scale,Rotate,Offset,Absolute,Sort,Menger,Tetra,Expression,KleinianFold,Inversion,Count};
 const char* kindName(Kind k);
 struct Stage {
  Kind kind=Kind::Scale;bool enabled=true;
@@ -54,7 +54,7 @@ struct Formula {
 };
 Formula preset(int index);
 const char* presetName(int index);
-constexpr int PresetCount=36;
+constexpr int PresetCount=40;
 struct Sample {float distance=0,trap=0;bool valid=true;};
 Sample distance(const Formula& f,Vec p,bool exact=false);
 Sample distanceOnly(const Formula& f,Vec p,bool exact=false);

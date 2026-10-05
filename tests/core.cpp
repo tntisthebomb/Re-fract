@@ -20,6 +20,17 @@ bool near(float a,float b,float e=.002f){return std::fabs(a-b)<e;}
 }
 int main(int argc,char** argv){
  std::string error;Expression e;Dual d;
+ for(int n=36;n<PresetCount;++n){
+  Formula k=preset(n);check(k.validate(error),"Kleinian preset validates");
+  Scene ks;ks.formula=k;ks.camera=presetCamera(n);ks.settings=presetSettings(n);
+  check(saveScene(ks,"test.rfs",error),"Kleinian scene saves");Scene loaded;
+  check(loadScene(loaded,"test.rfs",error)&&loaded.formula.terminal==3&&loaded.formula.stages[0].kind==Kind::KleinianFold,"Kleinian scene roundtrip");
+  for(int i=0;i<200;++i){Vec p{(i%17-8)*.213f,(i%19-9)*.127f,(i%23-11)*.171f};
+   auto a=distance(k,p),b=distanceOnly(k,p),c=distanceGeneric(k,p);
+   check(a.valid&&b.valid&&c.valid&&a.distance>=0&&near(a.distance,b.distance,1e-6f)&&near(a.distance,c.distance,1e-6f),"Kleinian finite and consistent query paths");}
+ }
+ {Formula k=preset(36);k.stages[0].b=0;check(!k.validate(error),"reject zero Kleinian fold extent");k=preset(36);k.stages[1].a=0;check(!k.validate(error),"reject zero inversion radius");}
+
  check(e.compile("-2^2+pow(3,2)*2",error),"precedence compile");
  check(e.evaluate({}, {},d)&&near(d.value,14),"precedence and unary minus");
  check(e.compile("2^3^2",error)&&e.evaluate({}, {},d)&&near(d.value,512),"right associative power");

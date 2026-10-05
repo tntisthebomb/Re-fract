@@ -43,6 +43,8 @@ struct FrameCopyCache {
  void reset(){valid[0]=valid[1]=false;}
 };
 Stage newStage(Kind kind){Stage s;s.kind=kind;s.a=0;s.b=0;s.c=0;
+ if(kind==Kind::KleinianFold)s.a=s.b=s.c=.8f;
+ if(kind==Kind::Inversion)s.a=1;
  if(kind==Kind::BoxFold)s.a=1;
  if(kind==Kind::SphereFold){s.a=.5f;s.b=1;}
  if(kind==Kind::Bulb){s.a=8;s.b=s.c=1;}
@@ -138,7 +140,7 @@ int main(){
    boolean("ALGEBRAIC BULB EXP",f.algebraicBulb);
    boolean("WORLD REPEAT",f.repeat);real("REPEAT X SPACING",f.repeatPeriod.x,1,0,1000);real("REPEAT Y SPACING",f.repeatPeriod.y,1,0,1000);real("REPEAT Z SPACING",f.repeatPeriod.z,1,0,1000);
    integer("ITERATIONS",f.iterations,1,1,32);real("BAILOUT",f.bailout,1,2,256);boolean("LOG DISTANCE",f.logarithmic);
-   integer("TERMINAL SHAPE",f.terminal,1,0,2);real("TERMINAL RADIUS",f.terminalRadius,.1f,.01f,100);
+   integer("TERMINAL SHAPE",f.terminal,1,0,3);real("TERMINAL RADIUS",f.terminalRadius,.1f,.01f,100);
    real("DERIVATIVE SCALE",f.derivativeScale,.25f,1,100);boolean("JULIA MODE",f.julia);
    real("JULIA X",f.constant.x,.05f,-100,100);real("JULIA Y",f.constant.y,.05f,-100,100);real("JULIA Z",f.constant.z,.05f,-100,100);
    integer("EDIT STAGE",stageIndex,1,0,int(f.stages.size())-1);
@@ -149,6 +151,8 @@ int main(){
    fields.push_back({{"OPERATION",kindName(a.kind)},[&](int d){int k=(int(a.kind)+d+int(Kind::Count))%int(Kind::Count);a=newStage(Kind(k));changed=true;},{}});
    boolean("ENABLED",a.enabled);
    const char* labels[3]={"PARAMETER A","PARAMETER B","PARAMETER C"};
+   if(a.kind==Kind::KleinianFold){labels[0]="FOLD X";labels[1]="FOLD Y";labels[2]="FOLD Z";}
+   if(a.kind==Kind::Inversion)labels[0]="INVERSION RADIUS";
    if(a.kind==Kind::BoxFold)labels[0]="FOLD LIMIT";
    if(a.kind==Kind::SphereFold){labels[0]="MINIMUM RADIUS";labels[1]="FIXED RADIUS";}
    if(a.kind==Kind::Bulb){labels[0]="POWER";labels[1]="THETA MULTIPLIER";labels[2]="PHI MULTIPLIER";}
@@ -162,7 +166,7 @@ int main(){
     });
    }else if(a.kind!=Kind::Absolute&&a.kind!=Kind::Sort&&a.kind!=Kind::Tetra){
     real(labels[0],a.a,.05f,a.kind==Kind::Bulb||a.kind==Kind::Menger?1.1f:a.kind==Kind::SphereFold?.001f:-100,a.kind==Kind::Bulb?16:100);
-    if(a.kind!=Kind::BoxFold){real(labels[1],a.b,.05f,a.kind==Kind::SphereFold?.001f:a.kind==Kind::Bulb?-4:-100,a.kind==Kind::Bulb?4:100);
+    if(a.kind!=Kind::BoxFold&&a.kind!=Kind::Inversion){real(labels[1],a.b,.05f,a.kind==Kind::SphereFold?.001f:a.kind==Kind::Bulb?-4:-100,a.kind==Kind::Bulb?4:100);
      if(a.kind!=Kind::SphereFold&&a.kind!=Kind::Scale)real(labels[2],a.c,.05f,a.kind==Kind::Bulb?-4:-100,a.kind==Kind::Bulb?4:100);
     }
    }
