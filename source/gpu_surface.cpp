@@ -4,7 +4,7 @@
 #include <cstring>
 namespace rf {
 void GpuSurface::synchronize(){
- if(initialized&&C3D_FrameBegin(0))C3D_FrameEnd(GX_CMDLIST_FLUSH);
+ if(initialized)C3D_FrameSync();
 }
 bool GpuSurface::upload(const SurfaceMesh& mesh){
  constexpr size_t maxVertices=(W/4)*(H/4),maxIndices=(W/4-1)*(H/4-1)*6;
@@ -50,8 +50,18 @@ bool GpuSurface::draw(const Scene& s,float slider){
  // VBO/IBO were flushed at upload; only flush newly emitted command lists.
  C3D_FrameEnd(GX_CMDLIST_FLUSH);return true;
 }
+bool GpuSurface::screenshot(int eye,std::vector<Color>& pixels){
+ if(!available()||eye<0||eye>1||!targets[eye])return false;
+ C3D_FrameSync();
+ u8* output=static_cast<u8*>(linearAlloc(W*H*3));if(!output)return false;
+ constexpr u32 flags=GX_TRANSFER_FLIP_VERT(0)|GX_TRANSFER_OUT_TILED(0)|GX_TRANSFER_RAW_COPY(0)|GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8)|GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8)|GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO);
+ C3D_SyncDisplayTransfer(static_cast<u32*>(targets[eye]->frameBuf.colorBuf),GX_BUFFER_DIM(H,W),reinterpret_cast<u32*>(output),GX_BUFFER_DIM(H,W),flags);
+ if(R_FAILED(GSPGPU_InvalidateDataCache(output,W*H*3))){linearFree(output);return false;}
+ pixels.resize(W*H);for(int x=0;x<W;++x)for(int y=0;y<H;++y){size_t k=(x*H+H-1-y)*3;pixels[y*W+x]={output[k+2],output[k+1],output[k]};}
+ linearFree(output);return true;
+}
 void GpuSurface::shutdown(){
- if(initialized){C3D_Fini();initialized=false;}
+ if(initialized){C3D_FrameSync();for(auto& target:targets)if(target){C3D_RenderTargetDelete(target);target=nullptr;}C3D_Fini();initialized=false;}
  if(vertices){linearFree(vertices);vertices=nullptr;}if(indices){linearFree(indices);indices=nullptr;}
  if(shader){shaderProgramFree(&program);DVLB_Free(shader);shader=nullptr;}
  targets[0]=targets[1]=nullptr;ready=false;count=0;

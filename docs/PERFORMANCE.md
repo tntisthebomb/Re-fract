@@ -179,3 +179,60 @@ Validation includes focus-plane convergence for both eyes, zero-aperture equival
 `benchmark-experiments.csv` remains the recorded corridor-pass snapshot. The optics preview utility reports current render costs and exports example scene settings; its costs include the full view/pass sequence and are desktop-only.
 
 Lens and accumulated stationary samples are excluded from temporal surface history. Moving pinhole samples can still participate in the optional temporal experiment; accumulation resets before movement reuse.
+
+## Color, glow and completed-pass timing
+
+COLOR has 2–5 evenly spaced gradient stops. Tap any color to open the hue/saturation
+wheel; the vertical slider changes brightness. A applies and B cancels. The D-pad
+changes hue/saturation and L/R changes brightness. Light and sky colors use the same picker.
+BOUNDED COLOR MAP transforms the orbit trap with t/(1+t), preventing traps above
+one from all clipping to the endpoint. It defaults on in new scenes. Older scenes retain
+legacy mapping; enable bounded mapping explicitly to update them.
+AUTO FIT GRADIENT uses the 5th–95th percentiles of cached visible orbit values,
+then adjusts scale/offset. Finish a single-sample pinhole render first; unavailable
+with moving, multisample lens or accumulated GI records. Flat traps cannot be fitted.
+Negative GRADIENT SCALE reverses the mapped direction. Repeat wraps the ramp.
+
+COLOR EMISSION adds the material color independently of surface lighting, and
+secondary indirect hits include that emission when GI is enabled. It is an artistic
+approximation, not energy-conserving path tracing. BLOOM HALO adds a separable
+13-pixel screen-space bright-pass blur after each stationary resolution/lighting pass.
+Bloom is skipped during motion and cannot be GPU-captured or material-recolored;
+bloom changes retrace the scene. Strength defaults to zero. Normal emission can recolor.
+
+FILES -> LAST FRAME MS records wall-clock duration of the latest completed resolution
+pass (all active eyes), including UI/vblank waits and stationary bloom. LAST FRAME
+SCALE / EYES identifies the pass. LAST REALTIME FRAME MS / SCALE retain the most
+recent completed moving sweep even after still refinement. This is a progressive sweep
+while the camera moves, not a simultaneous snapshot of one camera pose. A canceled
+pass never replaces the measurement. Scene/stereo/resolution changes restart timing.
+Measurements start at the first tracing batch, not at scene invalidation.
+
+Experimental ranges are widened: iterations 256, ray/shadow/GI steps 4096,
+GI/AO samples 64, lighting passes 4096, exposure/sun/emission/bloom 100,
+far clip 10000, gradient scale/offset +/-10000. Numeric A entry accepts the new
+ranges. Basic mathematical, finite-value, memory and discrete layout constraints
+remain enforced. Extreme values can cost much more time or break heuristic tracing.
+Scenes now save as v7; v1–v6 load with legacy two-color mapping and no emission/bloom.
+
+START now saves screenshots instead of exiting. FILES -> SAVE SCREENSHOT does the
+same. Images go to sdmc:/3ds/Re-fract/screenshots/: shot-TIME.jpg is the top screen,
+shot-TIME-screens.jpg includes both screens, and shot-TIME.mpo contains left/right
+views when stereo is active (slider above 2D). No Camera album registration is used.
+Stereo MPO uses MPF disparity entries and ordered left/right individual image numbers.
+Screenshots can capture partial renders. GPU navigation uses synchronized target readback.
+FILES -> EXIT APP returns home after joining the worker and synchronizing GPU cleanup.
+The reported START crash has not been reproduced on hardware; START no longer enters
+that exit path. Screenshot saving cancels the current timing sweep so SD I/O is not
+included in the next completed-frame measurement. JPEG encoding uses stb_image_write
+(nothings/stb, blob e4b32ed1bc32ef9c962acbf47a9d10af01939e08), its license is retained.
+
+Progressive lighting now starts at COLOR -> LIGHTING BLOCK (default 4X), with
+16 passes by default. 8X/16X trade spatial detail for faster visible convergence;
+1X is the expensive full-resolution choice. QUALITY MODE forces 1X. Earlier coarse
+refinement passes omit indirect rays and lens sampling. Each finished batch updates
+the display immediately; movement still resets accumulation. With AUTO REFINE off,
+accumulation uses the selected preview block directly. This improves feedback, but
+GI remains CPU tracing and is not instantaneous realtime global illumination.
+
+The vendored JPEG bit accumulator uses unsigned shifts to avoid signed-shift undefined behavior.

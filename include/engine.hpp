@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <array>
+#include <chrono>
 
 namespace rf {
 constexpr int W=400,H=240,MaxStages=12,MaxCode=128;
@@ -80,6 +81,9 @@ struct Settings {
  bool customGradient=false,gradientRepeat=false;
  Vec gradientLow{.18f,.06f,.025f},gradientHigh{.95f,.58f,.22f};
  float gradientScale=.8f,gradientOffset=0;
+ bool boundedGradient=true;int gradientStops=2;
+ float emission=0,bloom=0;
+ std::array<Vec,3> gradientMiddle{{{.3f,.2f,.6f},{.1f,.8f,.6f},{.95f,.6f,.1f}}};
  bool gpuCache=false;
  int meshStride=4;
  float meshEdge=.08f,meshNear=.005f;
@@ -95,7 +99,7 @@ struct Settings {
  std::array<PointLight,2> pointLights;
  bool pointShadows=false,dof=false,progressiveLighting=false;
  float sunStrength=1,aperture=.03f,focusDistance=4;
- int dofSamples=4,lightingPasses=32;
+ int dofSamples=4,lightingPasses=16,lightingBlock=4;
 };
 struct Camera {Vec position{0,0,-4};float yaw=0,pitch=0,speed=1;bool surfaceSpeed=true;float surfaceRange=1,minimumSpeed=.01f;};
 Camera presetCamera(int index);
@@ -149,6 +153,9 @@ class Renderer {
  std::array<std::vector<Vec>,2> accumulation;
  int lightingPass=0,finishedLightingPasses=0;
  bool cacheReady=false;
+ bool passTiming=false;std::chrono::steady_clock::time_point passStart;
+ float lastPassMs=0,lastLiveMs=0;int lastPassBlock=0,lastLiveBlock=0,lastPassEyes=0;
+ void finishPass(const Scene& scene,int eyes);void applyBloom(const Settings& settings,int eyes);
  struct History {Vec point;Color color;float footprint=0;uint32_t stamp=0;int eye=0;};
  std::array<History,8192> history{};size_t historyCount=0,historyCursor=0;
  uint32_t frame=0;int dynamicBlock=8,batchLimit=8,activeEyes=1;
@@ -167,6 +174,7 @@ class Renderer {
  void invalidate(const Scene& s,bool motion,bool clearHistory=true);
  void beginFrame(const Scene& s,bool motion,bool changed,float slider);
  bool recolor(const Scene& s);
+ bool fitGradient(Scene& s)const;
  bool captureSurface(const Scene& s,SurfaceMesh& mesh)const;
  void endFrame(const Scene& s,float totalMs,float renderMs,uint64_t jobs);
  // A bounded batch can be split between cores in mono and stereo modes.
@@ -180,10 +188,18 @@ class Renderer {
  void resetProfile(){totals={};}
  int previewSize()const{return dynamicBlock;}
  float measuredFrameMs()const{return frameMs;}
+ float lastCompletedFrameMs()const{return lastPassMs;}
+ float lastRealtimeFrameMs()const{return lastLiveMs;}
+ int lastCompletedFrameBlock()const{return lastPassBlock;}
+ int lastRealtimeFrameBlock()const{return lastLiveBlock;}
+ int lastCompletedFrameEyes()const{return lastPassEyes;}
  int accumulatedPasses()const{return finishedLightingPasses;}
  float progress(const Scene& s)const;
 };
 bool saveScene(const Scene& scene,const std::string& path,std::string& error);
 bool loadScene(Scene& scene,const std::string& path,std::string& error);
+bool saveJPEG(const std::vector<Color>& pixels,int width,int height,const std::string& path,std::string& error);
+bool saveMPO(const std::vector<Color>& left,const std::vector<Color>& right,const std::string& path,std::string& error);
+bool saveBMP(const std::vector<Color>& pixels,int width,int height,const std::string& path,std::string& error);
 bool savePPM(const std::vector<Color>& image,const std::string& path,std::string& error);
 }

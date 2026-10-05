@@ -139,3 +139,18 @@ Scenes now save as format v6 and still load v1–v5. Previous app versions canno
 **COLOR → PROGRESSIVE LIGHTING** adds repeated stationary passes with varied indirect-light samples and floating-point accumulation before display clipping. Enabling it in the menu sets INDIRECT SAMPLES to 1 if they were zero. Start with **LIGHTING PASSES 8–16**. It also improves lens sampling when depth of field is active. Camera movement, scene edits and stereo changes restart accumulation. FILES shows completed lighting passes; rendering stops at the selected limit. This remains the existing bounded diffuse-bounce approximation, not full path tracing. GPU capture and cached material recoloring are disabled for accumulated images.
 
 These features are off by default and can increase rendering time substantially. The CIA/3DSX builds are tested; final performance and stereo comfort still require console testing. Run the portable `optics_preview` target with an output prefix to reproduce point-light, lens and progressive examples.
+
+### Color and screenshot update
+
+COLOR now offers a touch hue/saturation wheel with brightness, 2–5 gradient stops,
+a bounded orbit mapping and Auto Fit Gradient. Color Emission and optional stationary
+Bloom Halo make materials glow. FILES displays the most recent completed resolution
+pass time and retains the last realtime sweep time/scale independently of still renders.
+Progressive lighting defaults to a 4X lighting block rather than waiting for full resolution;
+choose 8X for faster feedback or 1X/Quality for a finished image. Numerical ranges are
+substantially wider; mathematical and memory constraints still apply.
+
+START saves JPEG screenshots and, with active stereo, a 3D MPO in
+`sdmc:/3ds/Re-fract/screenshots/`. Files include a top-only JPEG and a JPEG of both
+screens. No Camera album registration is required. FILES -> Exit App replaces START
+as the exit action. Scene files save as v7 and read v1–v6. See docs/PERFORMANCE.md.

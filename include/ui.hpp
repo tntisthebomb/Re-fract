@@ -12,6 +12,9 @@ class Canvas {
  void text(int x,int y,const std::string& s,Color c,int scale=1);
  void grunge();
 };
+Vec hsvColor(float hue,float saturation,float value);
+Vec colorHSV(Vec color);
+void drawColorPicker(Canvas& canvas,float hue,float saturation,float value);
 struct Row {std::string label,value;};
 void drawPanel(Canvas& c,int tab,int selected,const std::vector<Row>& rows,const std::string& status,
  const std::string& name,int block,float progress,bool quality,float workMs);

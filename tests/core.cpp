@@ -20,6 +20,49 @@ bool near(float a,float b,float e=.002f){return std::fabs(a-b)<e;}
 }
 int main(int argc,char** argv){
  std::string error;Expression e;Dual d;
+ {Scene quick;quick.settings.stereo=false;quick.settings.progressiveLighting=true;quick.settings.giSamples=1;quick.settings.giSteps=4;quick.settings.giRange=.1f;quick.settings.lightingBlock=4;quick.settings.lightingPasses=2;quick.settings.previewBlock=8;
+  Renderer r;r.invalidate(quick,false);Rays rays(quick);while(!r.complete())r.step(quick,rays,0);
+  check(r.currentBlock()==4&&r.accumulatedPasses()==2,"progressive lighting converges at selected realtime resolution rather than waiting for 1X");
+  auto coarse=renderJob(quick,rays,{192,112,8,0});quick.settings.giSamples=0;auto direct=renderJob(quick,rays,{192,112,8,0});check(coarse.profile.shadingQueries==direct.profile.shadingQueries,"coarse progressive preview skips indirect work");
+ }
+
+ {std::vector<Color> left(W*H,Color{230,20,10}),right(W*H,Color{10,20,230});
+  check(saveJPEG(left,W,H,"test.jpg",error),"JPEG screenshot saves");check(saveMPO(left,right,"test.mpo",error),"stereo MPO screenshot saves");
+  std::ifstream input("test.mpo",std::ios::binary);std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(input)),{});
+  auto le=[&](size_t offset){return uint32_t(bytes[offset])|(uint32_t(bytes[offset+1])<<8)|(uint32_t(bytes[offset+2])<<16)|(uint32_t(bytes[offset+3])<<24);};
+  check(bytes.size()>124&&bytes[0]==255&&bytes[1]==216&&bytes[2]==255&&bytes[3]==226&&bytes[6]=='M'&&bytes[7]=='P'&&bytes[8]=='F',"MPO contains MPF APP2 marker");
+  uint32_t firstSize=le(64),secondSize=le(80),secondOffset=le(84);
+  check(firstSize==secondOffset+10&&firstSize+secondSize==bytes.size()&&bytes[firstSize]==255&&bytes[firstSize+1]==216,"MPO index sizes and TIFF-relative second JPEG offset");
+  check(!saveJPEG(left,320,H,"bad.jpg",error),"reject screenshot size mismatch");std::remove("test.jpg");std::remove("test.mpo");
+ }
+
+ {Scene test;test.settings.previewBlock=16;test.settings.autoRefine=false;test.settings.adaptiveResolution=false;test.settings.stereo=false;
+  Renderer timed;timed.invalidate(test,true);Rays rays(test);while(!timed.complete())timed.step(test,rays,0);
+  check(timed.lastCompletedFrameBlock()==16&&timed.lastRealtimeFrameBlock()==16&&timed.lastRealtimeFrameMs()>0,"completed realtime resolution pass records wall time and scale");
+  float live=timed.lastRealtimeFrameMs();timed.invalidate(test,false);while(!timed.complete())timed.step(test,rays,0);
+  check(timed.lastCompletedFrameEyes()==1&&timed.lastRealtimeFrameMs()==live,"stationary passes preserve last realtime frame timing");
+  check(timed.fitGradient(test)&&test.settings.gradientScale>0,"fit gradient to visible orbit range");
+  ShadeRecord record;record.valid=true;record.trap=.5f;Settings glow;glow.customGradient=true;glow.gradientLow=glow.gradientHigh={0,.4f,.1f};
+  Color dark=recolorSample(glow,record);glow.emission=1;Color lit=recolorSample(glow,record);check(lit.g>dark.g&&lit.g>lit.r,"emission lights shadowed material in its own color");
+  test.settings.emission=2;test.settings.bloom=1;test.settings.giSamples=5;test.settings.giSteps=4;test.settings.giRange=.1f;test.settings.sunStrength=0;
+  auto sample=renderJob(test,Rays(test),{192,112,16,0});check(std::isfinite(sample.radiance.y),"extended indirect sample count uses bounded hemisphere indexing");
+  test.settings.giSamples=0;Renderer bloom;bloom.invalidate(test,false);while(!bloom.complete())bloom.step(test,Rays(test),0);check(!bloom.recolor(test),"bloom requires retracing rather than recursively blooming cached backgrounds");test.settings.bloom=0;check(!bloom.recolor(test),"disabling bloom cannot reuse a bloomed cache");test.settings.bloom=1;
+  test.formula.iterations=64;test.settings.steps=1024;test.settings.farClip=1000;test.settings.gradientScale=1000;test.settings.exposure=8;
+  check(saveScene(test,"test.rfs",error),"extended numerical ranges save successfully");Scene restored;check(loadScene(restored,"test.rfs",error)&&restored.formula.iterations==64&&restored.settings.steps==1024&&restored.settings.emission==2&&restored.settings.bloom==1,"extended ranges and glow roundtrip");
+ }
+
+ {Settings colors;colors.customGradient=true;colors.gradientScale=1;colors.gradientLow={1,0,0};colors.gradientHigh={0,0,1};
+  Vec a=gradientColor(colors,2),b=gradientColor(colors,8);check(a.x>b.x&&a.z<b.z,"bounded color keeps orbit values above one distinct");
+  colors.boundedGradient=false;colors.gradientStops=5;colors.gradientMiddle={{{0,1,0},{1,1,0},{0,1,1}}};
+  for(int i=0;i<5;++i){Vec actual=gradientColor(colors,i*.25f),expected=i==0?colors.gradientLow:i==4?colors.gradientHigh:colors.gradientMiddle[i-1];check((actual-expected).length()<1e-5f,"five gradient stops match endpoints");}
+  Scene paletteScene;paletteScene.settings=colors;check(saveScene(paletteScene,"test.rfs",error),"save five-stop gradient");Scene restored;
+  check(loadScene(restored,"test.rfs",error)&&restored.settings.gradientStops==5&&!restored.settings.boundedGradient&&restored.settings.gradientMiddle[2].z==1,"v7 gradient roundtrip");
+  {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("GRADIENT ",0)==0)continue;if(line=="REFRACT 7")line="REFRACT 6";out<<line<<'\n';}}
+  check(loadScene(restored,"bad.rfs",error)&&!restored.settings.boundedGradient&&restored.settings.gradientStops==2&&restored.settings.emission==0&&restored.settings.bloom==0,"v6 scenes preserve legacy colors and disabled glow");
+  for(int i=0;i<100;++i){Vec c=hsvColor(i*.01f,.8f,.7f),h=colorHSV(c);check((hsvColor(h.x,h.y,h.z)-c).length()<1e-5f,"HSV color wheel roundtrip");}
+  Canvas picker(320,240);drawColorPicker(picker,.6f,.8f,.7f);check(picker.pixels[60*320+260].b>picker.pixels[60*320+260].r,"picker swatch renders selected color");
+ }
+
  for(int n=36;n<PresetCount;++n){
   Formula k=preset(n);check(k.validate(error),"Kleinian preset validates");
   Scene ks;ks.formula=k;ks.camera=presetCamera(n);ks.settings=presetSettings(n);
@@ -107,7 +150,7 @@ int main(int argc,char** argv){
  s.camera.position={0,0,0};check(near(cameraSpeedScale(s),s.camera.minimumSpeed,1e-6f),"minimum speed at surface");
  s.camera.position={0,0,-2};float first=cameraSpeedScale(s);s.camera.surfaceRange=4;check(cameraSpeedScale(s)<=first,"larger slowdown range reduces movement");
  s.camera.surfaceSpeed=false;check(near(cameraSpeedScale(s),1),"surface slowdown disabled");
- s.settings.customGradient=true;s.settings.gradientLow={1,0,0};s.settings.gradientHigh={0,0,1};s.settings.gradientScale=1;
+ s.settings.boundedGradient=false;s.settings.customGradient=true;s.settings.gradientLow={1,0,0};s.settings.gradientHigh={0,0,1};s.settings.gradientScale=1;
  Vec color=gradientColor(s.settings,.25f);check(near(color.x,.75f)&&near(color.z,.25f),"custom gradient interpolation");
  color=gradientColor(s.settings,2);check(near(color.x,0)&&near(color.z,1),"gradient endpoint clamp");
  s.settings.gradientRepeat=true;color=gradientColor(s.settings,1.25f);check(near(color.x,.75f)&&near(color.z,.25f),"repeated gradient");
@@ -116,9 +159,9 @@ int main(int argc,char** argv){
  check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error),"v2 scene roundtrip");
  check(loaded.settings.temporal&&loaded.settings.batchSize==16&&loaded.settings.customGradient&&near(loaded.settings.gradientLow.x,1)&&near(loaded.camera.minimumSpeed,.023f),"new settings persist");
  // Remove only the three v2 extension lines to obtain a legacy v1 scene.
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(n==0)out<<"REFRACT 1\n";else if(n!=2&&(n<5||n>7))out<<line<<'\n';++n;}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("GRADIENT ",0)==0||line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(n==0)out<<"REFRACT 1\n";else if(n!=2&&(n<5||n>7))out<<line<<'\n';++n;}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.temporal&&!loaded.settings.customGradient,"legacy v1 file still loads");
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(n==0)out<<"REFRACT 2\n";else if(n!=2)out<<line<<'\n';++n;}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("GRADIENT ",0)==0||line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(n==0)out<<"REFRACT 2\n";else if(n!=2)out<<line<<'\n';++n;}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.formula.repeat&&loaded.settings.temporal,"legacy v2 file still loads");
  s=Scene{};rays=Rays(s);
  for(float eye:{-.04f,0.f,.04f})for(float x:{10.f,200.f,390.f}){Vec o,direction;rays.ray(s,x,95,eye,o,direction);float px,py,depth;
@@ -225,7 +268,7 @@ int main(int argc,char** argv){
  check(avoidsJump,"mesh rejects triangles bridging depth discontinuities");
  check(surfaceMesh(s,{},meshDepths,1,0).indices.empty()&&surfaceMesh(s,meshColors,meshDepths,8,0).indices.empty(),"invalid buffers and too-coarse source reject capture");
  s.settings.meshStride=8;s.settings.meshEdge=.12f;check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error)&&loaded.settings.gpuCache&&loaded.settings.meshStride==8&&near(loaded.settings.meshEdge,.12f),"GPU controls persist in scene v4");
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(line=="REFRACT 6")line="REFRACT 3";out<<line<<'\n';}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("GRADIENT ",0)==0||line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(line=="REFRACT 7")line="REFRACT 3";out<<line<<'\n';}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.gpuCache,"legacy v3 defaults to CPU rendering");
  s=Scene{};s.settings.gpuCache=true;s.settings.previewBlock=4;s.settings.autoRefine=false;rays=Rays(s);renderer.invalidate(s,false);
  while(!renderer.complete())renderer.step(s,rays,0);
@@ -278,9 +321,9 @@ int main(int argc,char** argv){
  s.settings.giStrength=.7f;s.settings.adaptivePrecision=true;s.settings.gpuAutoRefresh=true;s.settings.adaptiveDetail=true;
  s.settings.distanceField=true;s.settings.fieldSpacing=.4f;s.settings.minEpsilon=.000002f;s.settings.skyColor={.2f,.3f,.4f};
  check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error)&&loaded.settings.distanceField&&near(loaded.settings.fieldSpacing,.4f)&&loaded.settings.adaptivePrecision&&loaded.settings.adaptiveDetail&&loaded.settings.gpuAutoRefresh&&loaded.settings.giSamples==4&&near(loaded.settings.skyColor.z,.4f),"v5 precision, indirect and refresh settings roundtrip");
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(line=="REFRACT 6")line="REFRACT 4";out<<line<<'\n';}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("GRADIENT ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(line=="REFRACT 7")line="REFRACT 4";out<<line<<'\n';}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.adaptivePrecision&&loaded.settings.giSamples==0,"legacy v4 uses original precision and no indirect lighting");
- s.settings.giSamples=5;check(!saveScene(s,"bad.rfs",error),"reject excessive secondary samples");
+ s.settings.giSamples=65;check(!saveScene(s,"bad.rfs",error),"reject excessive secondary samples");
  s.settings.giSamples=0;s.settings.minEpsilon=0;check(!saveScene(s,"bad.rfs",error),"reject zero precision floor");
  s=Scene{};TraceBenchmark serialBench(s),parallelBench(s);
  auto parallelBenchmark=[](const Scene& s,const Rays& rays,const RenderJob* jobs,RenderResult* results,int count,void*){BatchQueue q;q.reset(s,rays,jobs,results,count);std::thread thread([&](){q.consume();});q.consume();thread.join();};
@@ -342,9 +385,9 @@ int main(int argc,char** argv){
  check(restarted.r==afterReset.r&&restarted.g==afterReset.g&&restarted.b==afterReset.b,"restart replaces previous sums instead of blending old viewpoint");
  s.settings.gpuCache=true;s.settings.dof=true;s.settings.dofSamples=2;s.settings.pointLights[1].enabled=true;s.settings.pointLights[1].cameraRelative=false;s.settings.pointLights[1].color={.1f,.3f,.9f};s.settings.pointShadows=true;s.settings.sunStrength=.4f;
  check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error)&&loaded.settings.dof&&loaded.settings.dofSamples==2&&loaded.settings.progressiveLighting&&loaded.settings.pointLights[1].enabled&&!loaded.settings.pointLights[1].cameraRelative&&near(loaded.settings.pointLights[1].color.z,.9f)&&near(loaded.settings.sunStrength,.4f),"v6 lights, lens and progressive settings roundtrip");
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(line=="REFRACT 6")line="REFRACT 5";out<<line<<'\n';}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("GRADIENT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(line=="REFRACT 7")line="REFRACT 5";out<<line<<'\n';}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.dof&&!loaded.settings.progressiveLighting&&!loaded.settings.pointLights[0].enabled&&!loaded.settings.pointLights[1].enabled,"legacy v5 defaults to pinhole, fixed lighting and disabled point lights");
- s.settings.focusDistance=0;check(!saveScene(s,"bad.rfs",error),"reject zero focal distance");s.settings.focusDistance=4;s.settings.lightingPasses=129;check(!saveScene(s,"bad.rfs",error),"reject unbounded accumulation passes");
+ s.settings.focusDistance=0;check(!saveScene(s,"bad.rfs",error),"reject zero focal distance");s.settings.focusDistance=4;s.settings.lightingPasses=4097;check(!saveScene(s,"bad.rfs",error),"reject unbounded accumulation passes");
  s.settings.lightingPasses=32;s.settings.pointLights[0].color.x=2;check(!saveScene(s,"bad.rfs",error),"reject invalid point-light color");
  if(argc>1){
   std::string prefix=argv[1];s=Scene{};s.settings.previewBlock=4;s.settings.autoRefine=false;
