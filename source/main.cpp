@@ -176,6 +176,7 @@ int main(){
    action("RESUME CPU RENDER","A TRACE HERE",[&](){gpuSurface.synchronize();meshNavigation=false;changed=true;status="CPU RENDER AT CURRENT CAMERA";topCopies[0].reset();topCopies[1].reset();});
    integer("BATCH SIZE",v.batchSize,1,1,32);boolean("ADAPT RESOLUTION",v.adaptiveResolution);integer("TARGET REFRESH FPS",v.targetFps,5,15,60);
    boolean("FAST MOVE LIGHTING",v.previewLighting);boolean("DISTANCE FIELD EXP",v.distanceField);real("FIELD GRID SPACING",v.fieldSpacing,.05f,.05f,1);boolean("TEMPORAL EXPERIMENT",v.temporal);boolean("STEREO REUSE EXP",v.stereoReuse);
+   boolean("ADAPT EMPTY SPACE",v.adaptiveEmpty);boolean("ADAPT SKY EDGES",v.adaptiveSkyEdges);integer("SKY PROBE EVERY N",v.emptyProbe,1,1,64);integer("EDGE PROBE EVERY N",v.skyEdgeProbe,1,1,64);integer("SKY NEIGHBORS NEEDED",v.skyNeighbors,1,1,9);integer("DENSE REFRESH PASSES",v.emptyRefresh,1,0,256);
    boolean("ADAPTIVE TILES EXP",v.adaptiveTiles);boolean("FIXED FOVEATION EXP",v.foveated);real("RELAXATION EXP",v.relaxation,.05f,1,1.5f);
    integer("HISTORY FRAMES",v.historyFrames,1,1,30);integer("REFRESH EVERY N",v.refreshRate,1,1,8);
    real("FIELD OF VIEW",v.fov,5,20,100);real("MOVE SPEED",scene.camera.speed,.1f,.01f,10);
@@ -276,6 +277,7 @@ int main(){
    action("GPU MODE / TRIANGLES",std::string(meshNavigation?"ON / ":"OFF / ")+std::to_string(gpuSurface.triangles()),[](){});
    action("GPU DRAW MS",number(gpuSurface.drawingMs()),[](){});
    action("RAYS / DE QUERIES",std::to_string(renderer.profile().rays)+" / "+std::to_string(renderer.profile().distanceQueries),[](){});
+   action("SKY CELLS SKIPPED",std::to_string(renderer.profile().skySkipped),[](){});
    action("REUSE EVENTS / BATCHES",std::to_string(renderer.profile().reused)+" / "+std::to_string(renderer.profile().batches),[](){});
    action("RESET COUNTERS","A RESET",[&](){renderer.resetProfile();});
    action("CONTROLS","A HELP",[&](){status="PAD MOVE C-STICK LOOK ZL/ZR UP/DOWN";});

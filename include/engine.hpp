@@ -68,6 +68,7 @@ struct PointLight {
  float intensity=5,range=8;
 };
 struct Settings {
+ bool adaptiveEmpty=false,adaptiveSkyEdges=false;int emptyProbe=8,skyEdgeProbe=2,skyNeighbors=5,emptyRefresh=4;
  int stillBlock=1,upscale=0;
  int steps=64,previewBlock=8,interlace=4,ao=0,shadow=0,samples=1;
  float epsilon=.002f,safety=.65f,farClip=20,fov=55;
@@ -136,11 +137,11 @@ SurfaceMesh surfaceMesh(const Scene& scene,const std::vector<Color>& colors,cons
 Color trace(const Scene& s,const Rays& rays,float x,float y,float eye);
 Color shadeCell(const Scene& s,const Rays& rays,int x,int y,int block,float eye,int count);
 struct Profile {
- uint64_t rays=0,steps=0,distanceQueries=0,shadingQueries=0,reused=0,skipped=0,relaxFallbacks=0,batches=0;
+ uint64_t rays=0,steps=0,distanceQueries=0,shadingQueries=0,reused=0,skipped=0,relaxFallbacks=0,batches=0,skySkipped=0;
  void add(const Profile& p);
 };
 struct RenderJob {int x=0,y=0,block=1,eye=0;float offset=0;bool fast=false;bool moving=false;uint32_t sample=0;bool accumulate=false;};
-struct ShadeRecord {float trap=0,depth=0,lighting=0,specular=0;bool valid=false;Vec indirect{},localDiffuse{},localSpecular{};bool background=false;};
+struct ShadeRecord {float trap=0,depth=0,lighting=0,specular=0;bool valid=false;Vec indirect{},localDiffuse{},localSpecular{};bool background=false,escaped=false;};
 Color recolorSample(const Settings& settings,const ShadeRecord& record);
 struct RenderResult {ShadeRecord shade;Color color;Vec point;float depth=0;bool hit=false;Profile profile;Vec radiance{};};
 RenderResult renderJob(const Scene& s,const Rays& rays,const RenderJob& job);
@@ -150,6 +151,8 @@ void upscaleImage(const std::vector<Color>& source,std::vector<Color>& output,in
 class Renderer {
  std::array<std::vector<Color>,2> pixels,presented;bool presentedReady=false;
  void present(const Settings& settings,int eyes);
+ std::array<std::vector<uint8_t>,2> emptyMask;int emptyBlock=0,emptyColumns=0,emptyRows=0,emptyPass=0;
+ void classifyEmpty(const Settings& settings,int eyes);
  std::array<std::vector<float>,2> depths;
  std::array<std::vector<uint8_t>,2> ages;
  std::array<std::vector<ShadeRecord>,2> shades;

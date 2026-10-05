@@ -159,3 +159,7 @@ Sky Color now changes the visible background and fog. For a faster stationary im
 set RENDER -> STILL BLOCK 2, AUTO REFINE ON, QUALITY MODE OFF and UPSCALING BICUBIC.
 Use LIGHTING BLOCK 2 too if progressive lighting is enabled. Screenshots preserve the
 upscaled stereo output. Display settings save in scene format v8; old scenes still load.
+
+Optional RENDER -> ADAPT EMPTY SPACE sparsely probes confirmed sky during stationary
+refinement/progressive passes. Try SKY PROBE EVERY N 8; motion and Quality Mode stay
+dense. This saves void rays but can miss tiny geometry, so it defaults off. Saves are v9.

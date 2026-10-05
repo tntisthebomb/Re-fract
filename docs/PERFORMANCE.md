@@ -264,3 +264,36 @@ between filtered completed passes. No additional smoothing occurs at 1X. Bicubic
 soften narrow connections or ring at high-contrast edges; compare bilinear or nearest.
 Lazy display buffers and the separable temporary buffer add about 1.2MiB for stereo 2X.
 Scene format v8 reads v1-v7; earlier scenes default to nearest and a 1X still endpoint.
+
+## Adaptive empty-space sampling (optional)
+
+RENDER -> ADAPT EMPTY SPACE reduces primary ray work in stationary refinement and
+progressive passes. SKY PROBE EVERY N defaults to 8: one in eight cells in confirmed
+sky regions is traced; the rest reuse the exact sky radiance. A region qualifies only
+if all nine neighboring samples genuinely reach FAR CLIP without hitting geometry.
+Step-budget exhaustion, formula failures and neighborhoods with detected surfaces do
+not qualify. This conservative border protects most detected thin connections.
+
+Probe patterns rotate between lighting passes, every fourth stationary pass refreshes
+densely, and a new hit disables sparse sampling in its neighborhood for subsequent
+passes. Skipped progressive sky cells contribute the correct HDR sum, rather than
+reducing brightness as passes accumulate. Empty masks reset after camera movement,
+geometry/setting changes, stereo changes or resolution restarts. Motion and Quality
+Mode use dense primary sampling. This is a heuristic: small geometry missed by the
+initial samples can also be missed by sparse probes, so the option defaults OFF.
+Use a smaller N or disable it when assessing delicate threads. Scene format v9 reads
+v1-v8; previous scenes default to dense empty-space sampling.
+
+ADAPT SKY EDGES additionally permits sparse sampling around known escaped center
+samples when at least five of their nine neighbors are also escaped sky. These mixed
+sky/surface neighborhoods trace at least half their cells, even when interior sky uses
+one in eight. This targets expensive near-silhouette misses. It is more aggressive and
+can remove narrow geometry between sampled rays; it defaults OFF independently.
+Regular probes and every fourth pass remain dense; motion and Quality Mode disable it.
+
+Configurable controls: SKY PROBE EVERY N (1–64, default 8), EDGE PROBE EVERY N
+(1–64, default 2), SKY NEIGHBORS NEEDED (1–9, default 5) and DENSE REFRESH PASSES
+(0–256, default 4; zero disables dense refresh). N=1 traces every cell. Higher N
+reduces sampling and raises the risk of missing detail. Raising the neighbor requirement
+makes edge classification stricter; nine is equivalent to the conservative interior test.
+FILES -> SKY CELLS SKIPPED reports this optimization separately from other tile reuse.

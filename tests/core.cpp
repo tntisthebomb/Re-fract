@@ -20,6 +20,26 @@ bool near(float a,float b,float e=.002f){return std::fabs(a-b)<e;}
 }
 int main(int argc,char** argv){
  std::string error;Expression e;Dual d;
+ {Scene edge;edge.settings.stereo=false;edge.settings.previewBlock=8;edge.settings.stillBlock=4;edge.settings.adaptiveEmpty=true;Renderer strict,near;
+  strict.invalidate(edge,false);while(!strict.complete())strict.step(edge,Rays(edge),0);
+  edge.settings.adaptiveSkyEdges=true;near.invalidate(edge,false);while(!near.complete())near.step(edge,Rays(edge),0);
+  check(near.profile().skySkipped>=strict.profile().skySkipped,"configurable near-sky mode expands sparse sampling beyond conservative void regions");
+ }
+
+ {Scene sky;sky.camera.position={0,0,-100};sky.settings.farClip=.01f;sky.settings.stereo=false;sky.settings.previewBlock=8;sky.settings.stillBlock=2;Renderer full,adaptive;
+  Rays rays(sky);full.invalidate(sky,false);while(!full.complete())full.step(sky,rays,0);
+  sky.settings.adaptiveEmpty=true;adaptive.invalidate(sky,false);while(!adaptive.complete())adaptive.step(sky,rays,0);
+  check(adaptive.rays()<full.rays()/2&&adaptive.profile().skySkipped>0,"confirmed empty sky reduces refinement ray count");
+  bool same=true;for(int i=0;i<W*H;++i)same=same&&full.image(0)[i].r==adaptive.image(0)[i].r&&full.image(0)[i].g==adaptive.image(0)[i].g&&full.image(0)[i].b==adaptive.image(0)[i].b;check(same,"adaptive empty regions retain exact sky colors");
+  uint64_t before=adaptive.rays();sky.settings.previewBlock=2;sky.settings.adaptiveResolution=false;adaptive.invalidate(sky,true);while(!adaptive.complete())adaptive.step(sky,rays,0);check(adaptive.rays()-before==uint64_t(W/2*H/2),"camera motion restores full primary sampling");
+  sky.settings.previewBlock=8;sky.settings.autoRefine=false;sky.settings.progressiveLighting=true;sky.settings.giSamples=1;sky.settings.giSteps=4;sky.settings.lightingPasses=5;sky.settings.exposure=2;Renderer accumulated;accumulated.invalidate(sky,false);while(!accumulated.complete())accumulated.step(sky,Rays(sky),0);
+  Color first=accumulated.image(0)[0];bool constant=true;for(Color c:accumulated.image(0))constant=constant&&std::abs(int(c.r)-int(first.r))<=1&&std::abs(int(c.g)-int(first.g))<=1&&std::abs(int(c.b)-int(first.b))<=1;
+  check(constant&&first.b>=152&&accumulated.profile().skipped>0,"sparse progressive sky accumulates correct radiance through dense refresh");
+  sky.settings.quality=true;Renderer quality;quality.invalidate(sky,false);while(!quality.complete())quality.step(sky,Rays(sky),0);check(quality.profile().skipped==0,"quality mode disables adaptive sky skipping");
+  sky.settings.adaptiveSkyEdges=true;sky.settings.skyEdgeProbe=3;sky.settings.skyNeighbors=6;sky.settings.emptyRefresh=7;
+  check(saveScene(sky,"test.rfs",error),"save adaptive sky settings");Scene restored;check(loadScene(restored,"test.rfs",error)&&restored.settings.adaptiveEmpty&&restored.settings.emptyProbe==8&&restored.settings.adaptiveSkyEdges&&restored.settings.skyEdgeProbe==3&&restored.settings.skyNeighbors==6&&restored.settings.emptyRefresh==7,"v9 adaptive settings roundtrip");
+ }
+
  {Scene sky;sky.camera.position={0,0,-100};sky.settings.farClip=.01f;sky.settings.skyColor={.1f,.3f,.8f};sky.settings.exposure=1;
   auto blue=renderJob(sky,Rays(sky),{192,112,2,0});check(!blue.hit&&blue.color.b>blue.color.r&&blue.shade.background,"sky picker controls visible miss background");
   sky.settings.skyColor={.8f,.2f,.1f};Color red=recolorSample(sky.settings,blue.shade);check(red.r>red.b,"cached sky recolor changes visible background");
@@ -70,7 +90,7 @@ int main(int argc,char** argv){
   for(int i=0;i<5;++i){Vec actual=gradientColor(colors,i*.25f),expected=i==0?colors.gradientLow:i==4?colors.gradientHigh:colors.gradientMiddle[i-1];check((actual-expected).length()<1e-5f,"five gradient stops match endpoints");}
   Scene paletteScene;paletteScene.settings=colors;check(saveScene(paletteScene,"test.rfs",error),"save five-stop gradient");Scene restored;
   check(loadScene(restored,"test.rfs",error)&&restored.settings.gradientStops==5&&!restored.settings.boundedGradient&&restored.settings.gradientMiddle[2].z==1,"v7 gradient roundtrip");
-  {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("DISPLAY ",0)==0||line.rfind("GRADIENT ",0)==0)continue;if(line=="REFRACT 8")line="REFRACT 6";out<<line<<'\n';}}
+  {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("EMPTY ",0)==0||line.rfind("DISPLAY ",0)==0||line.rfind("GRADIENT ",0)==0)continue;if(line=="REFRACT 9")line="REFRACT 6";out<<line<<'\n';}}
   check(loadScene(restored,"bad.rfs",error)&&!restored.settings.boundedGradient&&restored.settings.gradientStops==2&&restored.settings.emission==0&&restored.settings.bloom==0,"v6 scenes preserve legacy colors and disabled glow");
   for(int i=0;i<100;++i){Vec c=hsvColor(i*.01f,.8f,.7f),h=colorHSV(c);check((hsvColor(h.x,h.y,h.z)-c).length()<1e-5f,"HSV color wheel roundtrip");}
   Canvas picker(320,240);drawColorPicker(picker,.6f,.8f,.7f);check(picker.pixels[60*320+260].b>picker.pixels[60*320+260].r,"picker swatch renders selected color");
@@ -172,9 +192,9 @@ int main(int argc,char** argv){
  check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error),"v2 scene roundtrip");
  check(loaded.settings.temporal&&loaded.settings.batchSize==16&&loaded.settings.customGradient&&near(loaded.settings.gradientLow.x,1)&&near(loaded.camera.minimumSpeed,.023f),"new settings persist");
  // Remove only the three v2 extension lines to obtain a legacy v1 scene.
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("DISPLAY ",0)==0||line.rfind("GRADIENT ",0)==0||line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(n==0)out<<"REFRACT 1\n";else if(n!=2&&(n<5||n>7))out<<line<<'\n';++n;}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("EMPTY ",0)==0||line.rfind("DISPLAY ",0)==0||line.rfind("GRADIENT ",0)==0||line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(n==0)out<<"REFRACT 1\n";else if(n!=2&&(n<5||n>7))out<<line<<'\n';++n;}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.temporal&&!loaded.settings.customGradient,"legacy v1 file still loads");
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("DISPLAY ",0)==0||line.rfind("GRADIENT ",0)==0||line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(n==0)out<<"REFRACT 2\n";else if(n!=2)out<<line<<'\n';++n;}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;int n=0;while(std::getline(in,line)){if(line.rfind("EMPTY ",0)==0||line.rfind("DISPLAY ",0)==0||line.rfind("GRADIENT ",0)==0||line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(n==0)out<<"REFRACT 2\n";else if(n!=2)out<<line<<'\n';++n;}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.formula.repeat&&loaded.settings.temporal,"legacy v2 file still loads");
  s=Scene{};rays=Rays(s);
  for(float eye:{-.04f,0.f,.04f})for(float x:{10.f,200.f,390.f}){Vec o,direction;rays.ray(s,x,95,eye,o,direction);float px,py,depth;
@@ -281,7 +301,7 @@ int main(int argc,char** argv){
  check(avoidsJump,"mesh rejects triangles bridging depth discontinuities");
  check(surfaceMesh(s,{},meshDepths,1,0).indices.empty()&&surfaceMesh(s,meshColors,meshDepths,8,0).indices.empty(),"invalid buffers and too-coarse source reject capture");
  s.settings.meshStride=8;s.settings.meshEdge=.12f;check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error)&&loaded.settings.gpuCache&&loaded.settings.meshStride==8&&near(loaded.settings.meshEdge,.12f),"GPU controls persist in scene v4");
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("DISPLAY ",0)==0||line.rfind("GRADIENT ",0)==0||line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(line=="REFRACT 8")line="REFRACT 3";out<<line<<'\n';}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("EMPTY ",0)==0||line.rfind("DISPLAY ",0)==0||line.rfind("GRADIENT ",0)==0||line.rfind("GPU ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(line=="REFRACT 9")line="REFRACT 3";out<<line<<'\n';}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.gpuCache,"legacy v3 defaults to CPU rendering");
  s=Scene{};s.settings.gpuCache=true;s.settings.previewBlock=4;s.settings.autoRefine=false;rays=Rays(s);renderer.invalidate(s,false);
  while(!renderer.complete())renderer.step(s,rays,0);
@@ -334,7 +354,7 @@ int main(int argc,char** argv){
  s.settings.giStrength=.7f;s.settings.adaptivePrecision=true;s.settings.gpuAutoRefresh=true;s.settings.adaptiveDetail=true;
  s.settings.distanceField=true;s.settings.fieldSpacing=.4f;s.settings.minEpsilon=.000002f;s.settings.skyColor={.2f,.3f,.4f};
  check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error)&&loaded.settings.distanceField&&near(loaded.settings.fieldSpacing,.4f)&&loaded.settings.adaptivePrecision&&loaded.settings.adaptiveDetail&&loaded.settings.gpuAutoRefresh&&loaded.settings.giSamples==4&&near(loaded.settings.skyColor.z,.4f),"v5 precision, indirect and refresh settings roundtrip");
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("DISPLAY ",0)==0||line.rfind("GRADIENT ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(line=="REFRACT 8")line="REFRACT 4";out<<line<<'\n';}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("EMPTY ",0)==0||line.rfind("DISPLAY ",0)==0||line.rfind("GRADIENT ",0)==0||line.rfind("LIGHT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(line=="REFRACT 9")line="REFRACT 4";out<<line<<'\n';}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.adaptivePrecision&&loaded.settings.giSamples==0,"legacy v4 uses original precision and no indirect lighting");
  s.settings.giSamples=65;check(!saveScene(s,"bad.rfs",error),"reject excessive secondary samples");
  s.settings.giSamples=0;s.settings.minEpsilon=0;check(!saveScene(s,"bad.rfs",error),"reject zero precision floor");
@@ -398,7 +418,7 @@ int main(int argc,char** argv){
  check(restarted.r==afterReset.r&&restarted.g==afterReset.g&&restarted.b==afterReset.b,"restart replaces previous sums instead of blending old viewpoint");
  s.settings.gpuCache=true;s.settings.dof=true;s.settings.dofSamples=2;s.settings.pointLights[1].enabled=true;s.settings.pointLights[1].cameraRelative=false;s.settings.pointLights[1].color={.1f,.3f,.9f};s.settings.pointShadows=true;s.settings.sunStrength=.4f;
  check(saveScene(s,"test.rfs",error)&&loadScene(loaded,"test.rfs",error)&&loaded.settings.dof&&loaded.settings.dofSamples==2&&loaded.settings.progressiveLighting&&loaded.settings.pointLights[1].enabled&&!loaded.settings.pointLights[1].cameraRelative&&near(loaded.settings.pointLights[1].color.z,.9f)&&near(loaded.settings.sunStrength,.4f),"v6 lights, lens and progressive settings roundtrip");
- {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("DISPLAY ",0)==0||line.rfind("GRADIENT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(line=="REFRACT 8")line="REFRACT 5";out<<line<<'\n';}}
+ {std::ifstream in("test.rfs");std::ofstream out("bad.rfs");std::string line;while(std::getline(in,line)){if(line.rfind("EMPTY ",0)==0||line.rfind("DISPLAY ",0)==0||line.rfind("GRADIENT ",0)==0||line.rfind("OPTICS ",0)==0||line.rfind("POINT ",0)==0)continue;if(line=="REFRACT 9")line="REFRACT 5";out<<line<<'\n';}}
  check(loadScene(loaded,"bad.rfs",error)&&!loaded.settings.dof&&!loaded.settings.progressiveLighting&&!loaded.settings.pointLights[0].enabled&&!loaded.settings.pointLights[1].enabled,"legacy v5 defaults to pinhole, fixed lighting and disabled point lights");
  s.settings.focusDistance=0;check(!saveScene(s,"bad.rfs",error),"reject zero focal distance");s.settings.focusDistance=4;s.settings.lightingPasses=4097;check(!saveScene(s,"bad.rfs",error),"reject unbounded accumulation passes");
  s.settings.lightingPasses=32;s.settings.pointLights[0].color.x=2;check(!saveScene(s,"bad.rfs",error),"reject invalid point-light color");

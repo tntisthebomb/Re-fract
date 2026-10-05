@@ -8,7 +8,7 @@ namespace {
 bool settingsValid(const Scene& s){
  const Settings& v=s.settings;
  auto range=[](float x,float lo,float hi){return std::isfinite(x)&&x>=lo&&x<=hi;};
- if((v.stillBlock!=1&&v.stillBlock!=2&&v.stillBlock!=4&&v.stillBlock!=8&&v.stillBlock!=16)||v.upscale<0||v.upscale>2||(v.lightingBlock!=1&&v.lightingBlock!=2&&v.lightingBlock!=4&&v.lightingBlock!=8&&v.lightingBlock!=16)||!range(v.emission,0,100)||!range(v.bloom,0,100)||v.gradientStops<2||v.gradientStops>5)return false;
+ if(v.skyEdgeProbe<1||v.skyEdgeProbe>64||v.skyNeighbors<1||v.skyNeighbors>9||v.emptyRefresh<0||v.emptyRefresh>256||v.emptyProbe<1||v.emptyProbe>64||(v.stillBlock!=1&&v.stillBlock!=2&&v.stillBlock!=4&&v.stillBlock!=8&&v.stillBlock!=16)||v.upscale<0||v.upscale>2||(v.lightingBlock!=1&&v.lightingBlock!=2&&v.lightingBlock!=4&&v.lightingBlock!=8&&v.lightingBlock!=16)||!range(v.emission,0,100)||!range(v.bloom,0,100)||v.gradientStops<2||v.gradientStops>5)return false;
  for(Vec color:v.gradientMiddle)if(!range(color.x,0,1)||!range(color.y,0,1)||!range(color.z,0,1))return false;
  for(const auto& lamp:v.pointLights)if(!range(lamp.position.x,-10000,10000)||!range(lamp.position.y,-10000,10000)||!range(lamp.position.z,-10000,10000)||
   !range(lamp.color.x,0,1)||!range(lamp.color.y,0,1)||!range(lamp.color.z,0,1)||!range(lamp.intensity,0,10000)||!range(lamp.range,.0001f,10000))return false;
@@ -31,7 +31,7 @@ bool settingsValid(const Scene& s){
 bool saveScene(const Scene& s,const std::string& path,std::string& error){
  Scene checked=s;if(!checked.formula.validate(error)||!settingsValid(s)){if(error.empty())error="Invalid scene settings";return false;}
  std::ofstream out(path+".tmp");if(!out){error="Cannot write scene";return false;}
- out<<std::setprecision(9)<<"REFRACT 8\n";
+ out<<std::setprecision(9)<<"REFRACT 9\n";
  const Formula& f=s.formula;const Settings& v=s.settings;const Camera& c=s.camera;
  out<<f.iterations<<' '<<f.bailout<<' '<<f.logarithmic<<' '<<f.julia<<' '<<f.constant.x<<' '<<f.constant.y<<' '<<f.constant.z<<' '<<f.derivativeScale<<' '<<f.terminal<<' '<<f.terminalRadius<<'\n';
  out<<f.repeat<<' '<<f.repeatPeriod.x<<' '<<f.repeatPeriod.y<<' '<<f.repeatPeriod.z<<'\n';
@@ -55,6 +55,7 @@ bool saveScene(const Scene& s,const std::string& path,std::string& error){
  for(Vec color:v.gradientMiddle)out<<' '<<color.x<<' '<<color.y<<' '<<color.z;
  out<<'\n';
  out<<"DISPLAY "<<v.stillBlock<<' '<<v.upscale<<'\n';
+ out<<"EMPTY "<<v.adaptiveEmpty<<' '<<v.emptyProbe<<' '<<v.adaptiveSkyEdges<<' '<<v.skyEdgeProbe<<' '<<v.skyNeighbors<<' '<<v.emptyRefresh<<'\n';
  out.close();if(!out){error="Scene write failed";std::remove((path+".tmp").c_str());return false;}
  if(std::rename((path+".tmp").c_str(),path.c_str())!=0){error="Cannot replace scene";return false;}
  error="SCENE SAVED";return true;
@@ -63,7 +64,7 @@ bool loadScene(Scene& s,const std::string& path,std::string& error){
  std::ifstream in(path,std::ios::binary);if(!in){error="Scene slot is empty";return false;}
  in.seekg(0,std::ios::end);auto size=in.tellg();if(size<0||size>16384){error="Scene file too large";return false;}in.seekg(0);
  Scene next;next.settings.boundedGradient=false;std::string magic;int version=0;in>>magic>>version;
- if(magic!="REFRACT"||(version<1||version>8)){error="Unsupported scene format";return false;}
+ if(magic!="REFRACT"||(version<1||version>9)){error="Unsupported scene format";return false;}
  Formula& f=next.formula;Settings& v=next.settings;Camera& c=next.camera;
  in>>f.iterations>>f.bailout>>f.logarithmic>>f.julia>>f.constant.x>>f.constant.y>>f.constant.z>>f.derivativeScale>>f.terminal>>f.terminalRadius;
  if(version>=3)in>>f.repeat>>f.repeatPeriod.x>>f.repeatPeriod.y>>f.repeatPeriod.z;
@@ -91,6 +92,7 @@ bool loadScene(Scene& s,const std::string& path,std::string& error){
  }
  if(version>=7){std::string tag;in>>tag>>v.boundedGradient>>v.gradientStops>>v.emission>>v.bloom>>v.lightingBlock;for(Vec& color:v.gradientMiddle)in>>color.x>>color.y>>color.z;if(tag!="GRADIENT"){error="Missing gradient settings";return false;}}
  if(version>=8){std::string tag;in>>tag>>v.stillBlock>>v.upscale;if(tag!="DISPLAY"){error="Missing display settings";return false;}}
+ if(version>=9){std::string tag;in>>tag>>v.adaptiveEmpty>>v.emptyProbe>>v.adaptiveSkyEdges>>v.skyEdgeProbe>>v.skyNeighbors>>v.emptyRefresh;if(tag!="EMPTY"){error="Missing empty-space settings";return false;}}
  if(!in){error="Truncated or malformed scene";return false;}in>>std::ws;if(!in.eof()){error="Unexpected trailing data";return false;}
  if(!settingsValid(next)){error="Settings outside supported range";return false;}
  if(!f.validate(error))return false;
