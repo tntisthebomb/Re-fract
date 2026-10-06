@@ -20,6 +20,20 @@ bool near(float a,float b,float e=.002f){return std::fabs(a-b)<e;}
 }
 int main(int argc,char** argv){
  std::string error;Expression e;Dual d;
+ {std::vector<Color> input(W*H),fresh,cached;for(int y=0;y<H;++y)for(int x=0;x<W;++x)input[y*W+x]={uint8_t(x%256),uint8_t(y),uint8_t((x+y)%256)};
+  UpscaleWorkspace workspace;
+  auto split=[](int n,LoopBody body,void* work,void*){std::thread t([&](){for(int i=0;i<n;i+=2)body(i,work);});for(int i=1;i<n;i+=2)body(i,work);t.join();};
+  for(int block:{2,4,8,16,32,2})for(int method:{2,1,0,2}){upscaleImage(input,fresh,block,method);upscaleImage(input,cached,block,method,split,nullptr,&workspace);
+   bool equal=true;for(int i=0;i<W*H;++i)equal=equal&&fresh[i].r==cached[i].r&&fresh[i].g==cached[i].g&&fresh[i].b==cached[i].b;
+   check(equal,"reusable heap upscaler remains identical across scale/filter/stereo reuse");
+  }
+  auto* table=workspace.x.data();auto* buffer=workspace.horizontal.data();upscaleImage(input,cached,2,2,nullptr,nullptr,&workspace);
+  check(table==workspace.x.data()&&buffer==workspace.horizontal.data(),"unchanged upscale filter reuses allocation and coefficient tables");
+  Scene scene;scene.settings.stereo=false;scene.settings.previewBlock=8;scene.settings.stillBlock=8;Renderer render;render.invalidate(scene,false);while(!render.complete())render.step(scene,Rays(scene),0);
+  auto rays=render.rays();for(int method:{2,1,0,2}){scene.settings.upscale=method;check(render.rescale(scene)&&render.complete()&&render.rays()==rays,"changing filter reuses a completed frame without tracing rays");}
+  render.invalidate(scene,false);check(!render.rescale(scene)&&!render.complete(),"active render defers presentation switch to next completed pass");
+ }
+
  {Scene scene;scene.settings.stereo=false;scene.settings.previewBlock=8;scene.settings.stillBlock=8;scene.settings.lightingBlock=8;scene.settings.giSamples=1;scene.settings.giSteps=8;scene.settings.progressiveLighting=true;scene.settings.lightingPasses=5;
   Renderer reference,split;reference.invalidate(scene,false);while(!reference.complete())reference.step(scene,Rays(scene),0);
   scene.settings.separateLighting=true;split.invalidate(scene,false);int guard=0;while(!split.complete()&&guard++<100000)split.step(scene,Rays(scene),0);

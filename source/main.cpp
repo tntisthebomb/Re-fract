@@ -14,6 +14,8 @@
 #include <memory>
 #include <sys/stat.h>
 
+// Keep headroom for nested rendering, UI and screenshot calls on the console.
+extern "C" {u32 __stacksize__=64*1024;}
 using namespace rf;
 namespace {
 struct Field {Row row;std::function<void(int)> adjust;std::function<void()> activate;};
@@ -320,6 +322,10 @@ int main(){
    const std::string& label=fields[selected].row.label;
    bool material=label=="PALETTE"||label=="CUSTOM GRADIENT"||label.rfind("GRADIENT ",0)==0||label=="SKY COLOR"||label=="AUTO FIT GRADIENT"||label=="BOUNDED COLOR MAP"||label=="COLOR EMISSION"||label=="BLOOM HALO"||label=="GRADIENT SCALE"||label=="GRADIENT OFFSET"||label=="REPEAT GRADIENT"||label=="EXPOSURE"||label=="FOG DENSITY";
    if(material&&renderer.recolor(scene)){changed=false;status="COLOR UPDATED / GEOMETRY REUSED";}
+  }
+  if(changed&&materialEditOnly&&before&&tab==1&&fields[selected].row.label=="UPSCALING"){
+   bool updated=renderer.rescale(scene);changed=false;
+   status=updated?"SCALING UPDATED / FRAME REUSED":"SCALING APPLIES AT NEXT FULL PASS";
   }
   if(changed&&meshNavigation){gpuSurface.synchronize();meshNavigation=false;topCopies[0].reset();topCopies[1].reset();}
   if(captureRequested){captureRequested=false;SurfaceMesh mesh;

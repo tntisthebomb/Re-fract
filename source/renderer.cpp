@@ -301,6 +301,10 @@ bool Renderer::recolor(const Scene& s){
  else for(int i=0;i<rows;++i)row(i,&work);
  applyBloom(s.settings,activeEyes);present(s.settings,activeEyes);historyCount=historyCursor=0;++revision;return true;
 }
+bool Renderer::rescale(const Scene& s){
+ if(!done||moving)return false;
+ present(s.settings,activeEyes);++revision;return true;
+}
 bool Renderer::captureSurface(const Scene& s,SurfaceMesh& mesh)const{
  if(!s.settings.gpuCache||!cacheReady||!done||moving||s.settings.bloom>0||block>s.settings.meshStride||(s.settings.dof&&s.settings.aperture>0)||progressiveActive(s.settings))return false;
  SurfaceMesh next=surfaceMesh(s,pixels[0],depths[0],block,activeEyes==2?-eyeOffset:0,parallelFor,loopContext);
@@ -373,7 +377,7 @@ void Renderer::classifyEmpty(const Settings& s,int eyes){
 }
 void Renderer::present(const Settings& s,int eyes){
  if(s.upscale==0||block==1){presentedReady=false;return;}
- for(int eye=0;eye<eyes;++eye)upscaleImage(pixels[eye],presented[eye],block,s.upscale,s.parallel?parallelFor:nullptr,loopContext);
+ for(int eye=0;eye<eyes;++eye)upscaleImage(pixels[eye],presented[eye],block,s.upscale,s.parallel?parallelFor:nullptr,loopContext,&upscaleWorkspace);
  presentedReady=true;++revision;
 }
 void Renderer::resolveLighting(const Scene& scene,int eyes,const RenderJob* updated,int count){

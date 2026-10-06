@@ -361,3 +361,18 @@ unit tests compare their distance and trap values against the interpreter.
 All new approximation/sampling switches default OFF. These options are not
 promises of speedups: lighting reconstruction, prepasses and variance storage
 have overhead. Test on the actual console with identical scenes/settings.
+
+
+## Scaling-mode stability and reuse
+
+Filter coefficient tables now live in a reusable heap workspace, rather than
+large local arrays. ARM compiler stack reports show upscaleImage's frame
+reduced from 20,672 bytes to 224 bytes. Renderer::step uses 8,496 bytes; the
+old nested combination left very little room in the original 32 KiB main
+stack. The main stack now has 64 KiB of headroom. This addresses a plausible
+console stack overflow; hardware verification is still required.
+
+Filter tables and horizontal scratch buffers are reused across passes and
+stereo eyes. Switching UPSCALING on a completed CPU frame now re-presents
+that frame without tracing it again. During an active pass, the new filter
+applies at the next completed pass. Geometry resolution changes still retrace.

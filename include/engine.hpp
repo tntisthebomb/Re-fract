@@ -150,9 +150,12 @@ struct RenderResult {ShadeRecord shade;Color color;Vec point;float depth=0;bool 
 RenderResult renderJob(const Scene& s,const Rays& rays,const RenderJob& job);
 void renderJobs(const Scene& s,const Rays& rays,const RenderJob* jobs,RenderResult* results,int count);
 using BatchShader=void (*)(const Scene&,const Rays&,const RenderJob*,RenderResult*,int,void*);
-void upscaleImage(const std::vector<Color>& source,std::vector<Color>& output,int block,int method,ParallelFor loop=nullptr,void* context=nullptr);
+struct UpscaleAxis {int index[4]{};float weight[4]{};};
+struct UpscaleWorkspace {std::vector<UpscaleAxis> x,y;std::vector<Vec> horizontal;int block=0,method=-1;};
+void upscaleImage(const std::vector<Color>& source,std::vector<Color>& output,int block,int method,ParallelFor loop=nullptr,void* context=nullptr,UpscaleWorkspace* workspace=nullptr);
 class Renderer {
  std::array<std::vector<Color>,2> pixels,presented;bool presentedReady=false;
+ UpscaleWorkspace upscaleWorkspace;
  void present(const Settings& settings,int eyes);
  std::array<std::vector<uint8_t>,2> emptyMask;int emptyBlock=0,emptyColumns=0,emptyRows=0,emptyPass=0;
  void classifyEmpty(const Settings& settings,int eyes);
@@ -188,6 +191,7 @@ class Renderer {
  void invalidate(const Scene& s,bool motion,bool clearHistory=true);
  void beginFrame(const Scene& s,bool motion,bool changed,float slider);
  bool recolor(const Scene& s);
+ bool rescale(const Scene& s);
  bool fitGradient(Scene& s)const;
  bool captureSurface(const Scene& s,SurfaceMesh& mesh)const;
  void endFrame(const Scene& s,float totalMs,float renderMs,uint64_t jobs);
