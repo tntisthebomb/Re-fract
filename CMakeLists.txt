@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(ReFractCore LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-add_library(refract_core source/expression.cpp source/formula.cpp source/renderer.cpp source/surface.cpp source/storage.cpp source/ui.cpp)
+add_library(refract_core source/expression.cpp source/formula.cpp source/renderer.cpp source/surface.cpp source/storage.cpp source/ui.cpp source/screenshot.cpp source/upscale.cpp)
 target_include_directories(refract_core PUBLIC include)
 target_compile_options(refract_core PRIVATE -Wall -Wextra -Wpedantic)
 find_package(Threads REQUIRED)
@@ -15,3 +15,18 @@ add_executable(core_benchmark tests/benchmark.cpp)
 target_link_libraries(core_benchmark PRIVATE refract_core)
 add_executable(bulb_benchmark tests/bulb_benchmark.cpp)
 target_link_libraries(bulb_benchmark PRIVATE refract_core)
+
+add_executable(experiment_benchmark tests/experiment_benchmark.cpp)
+target_link_libraries(experiment_benchmark PRIVATE refract_core)
+
+add_executable(optics_preview tests/optics_preview.cpp)
+target_link_libraries(optics_preview PRIVATE refract_core)
+
+add_executable(color_preview tests/color_preview.cpp)
+target_link_libraries(color_preview PRIVATE refract_core)
+
+add_executable(upscale_preview tests/upscale_preview.cpp)
+target_link_libraries(upscale_preview PRIVATE refract_core)
+
+add_executable(performance_benchmark tests/performance_benchmark.cpp)
+target_link_libraries(performance_benchmark PRIVATE refract_core)

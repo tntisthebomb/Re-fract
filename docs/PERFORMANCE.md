@@ -120,3 +120,259 @@ Implementation follows devkitPro's [GPU triangle example](https://github.com/dev
 The [host benchmark](benchmark-algebraic-bulb.csv) alternates the two modes over ten measured repetitions after two warmups, taking medians for 1,500 shaded rays per preset. Sampled Mandelbulb 8/2 and Julia Bulb traces take approximately 51–61% less desktop time. Mandelbulb 8 differs at 3 of 1,500 pixels by at most one channel value; the other two sampled images match. These measurements do not establish New 3DS gains or bounds on arbitrary zooms. Repeated iteration and finite-difference shading can amplify floating-point differences. The experiment is off by default.
 
 Six additional presets bring the browser to 24 entries. Their editable operation chains are documented in FORMULAS.md. PPM exports now write the packed RGB image in one buffered operation rather than one call per pixel.
+
+## Corridor, lighting and preview experiments
+
+### Zoom precision and detail
+
+ZOOM PRECISION EXP bounds hit tolerance by the world-space pixel footprint (`2*t*tan(FOV/2)/240 * PIXEL TOLERANCE`), with MIN HIT EPSILON as a lower bound and the original tolerance as a ceiling. It also shrinks normal-sampling offsets; those offsets remain large enough to represent coordinate changes in float. Defaults retain the original path. The editable HIT EPSILON lower limit is now 1e-6. Smaller tolerances can require many more march steps or reveal missed rays; this is a detail control, not a guaranteed speedup.
+
+ADAPT DETAIL EXP uses at most MOVE ITERATIONS during movement. At rest, camera proximity adds one iteration per approximate halving below 0.25 world units, up to DETAIL ITERATION CAP (never below the base formula iterations). It leaves the saved formula iteration count unchanged. Camera proximity is only a heuristic: a distant target viewed with narrow FOV does not automatically receive extra iterations. Changing iterations changes geometry, so motion/stationary transitions can pop. It remains off by default and is incompatible with the distance cache, which is automatically bypassed.
+
+### Sampled indirect lighting
+
+COLOR → INDIRECT SAMPLES (0–4) controls a deterministic hemisphere sampling approximation. Secondary rays use INDIRECT STEPS (4–64) and INDIRECT RANGE (0.1–10). A secondary hit contributes its orbit-gradient color under approximate direct diffuse lighting; an unobstructed ray reaching the range limit contributes SKY COLOR. Exhausted or invalid rays contribute no light. INDIRECT STRENGTH scales the average contribution. The implementation has no recursion, stochastic temporal noise or further bounces. It omits secondary shadow testing, physical BRDF normalization, reflections and light transport beyond the finite range. It is an artistic one-bounce approximation, not an unbiased path tracer or full global illumination.
+
+Indirect tracing preserves the primary geometry and records secondary distance queries. Fast moving lighting skips it. Quality antialiasing samples repeat the lighting calculation. RGB indirect illumination is retained in shade records and baked into GPU captures. Material recoloring restarts tracing when indirect samples are enabled, because the cached bounce colors would otherwise become stale. Samples default to zero; start with one, 16 steps, strength 0.5 and range 2. More samples usually cost more time.
+
+### Experimental 3D distance cache
+
+DISTANCE FIELD EXP builds a 33³ grid (35,937 distances, about 140 KiB) centered on the camera. FIELD GRID SPACING sets its sample spacing and extent. Four independent rows are built per UI frame, sharing the existing worker. The cache is only used once fully built; exact rendering continues while it warms. Formula/settings edits or moving out of its central region rebuild it. Adaptive iteration changes bypass it.
+
+Only fast moving previews use the grid. A query far from a sampled surface uses the nearest stored estimate minus sample offset; queries within two grid spacings of sampled geometry, outside the grid or with invalid samples use the formula. All stationary, quality, coloring and normal queries retain formula evaluation. Arbitrary fractal distance estimators do not guarantee the Lipschitz behavior assumed by this approximation. Thin features, seams and overestimated distances can produce incorrect moving previews. The final stationary image does not use the approximation. This is not an occupancy proof or a volumetric mesh.
+
+FILES shows cache progress. BENCH MOVE PREVIEW retains a completed cache snapshot when available; BENCH CURRENT VIEW bypasses it. Both freeze the scene, evaluate 1,500 mono sample positions in bounded batches, use the persistent worker when enabled and time active work with hardware ticks. QUALITY SAMPLES can produce more than 1,500 rays. CSV includes tracing time, rays/second, distance queries, checksum and major settings. Benchmark timing excludes UI, VBlank, image transfers and cache construction; it is not complete-scene FPS. CSV uses the selected scene slot and is replaced by the next benchmark for that slot. A benchmark pauses CPU image tracing and can be canceled from FILES.
+
+The host experiment benchmark is in `tests/experiment_benchmark.cpp`; build its CMake target and run it to regenerate `benchmark-experiments.csv`. It takes five measured repetitions after one warmup for each grouped mode, so small timing differences are noisy. Cache construction is timed separately. Cached-preview changed-pixel counts and maximum channel differences are recorded; changed checksums are expected and must not be treated as lossless gains. Construction cost must be amortized across reused views. These desktop samples do not establish console speedups.
+
+### GPU automatic recapture
+
+Enable GPU AUTO RECAPTURE before capturing a completed single-sample view. While navigating, the GPU displays the finite old surface and the CPU renders the current view within the frame budget. Once movement stops and the new view finishes, a fresh mesh replaces the old one. This is full-view recapture, not selective hole filling, merging of multiple captures or concurrent independent CPU threads beyond the existing worker. Holes and baked lighting remain visible until replacement. More CPU work can lower navigation responsiveness. Shaders, targets and fixed-capacity vertex/index buffers are now reused between captures; GPU work is synchronized before buffer overwrites. Failure falls back to CPU display.
+
+### Hardware checks and remaining research
+
+Portable regression checks, serial/parallel benchmark agreement, exact-path image comparisons, ASan/UBSan and cross-compilation cover the new code. Test on New 3DS: cache warmup and recentering, moving cache artifacts, near-surface precision/detail transitions, indirect sample costs, repeated stereo GPU recaptures, edits during navigation, benchmark cancel/save, and sleep/resume. GPU execution remains unverified here. Scenes save as v6 and read v1–v5; older apps cannot read v6.
+
+Vertex-shader ray marching, adaptive volumetric mesh extraction, predictive rendering, mathematically certified spatial bounds and self-similar geometry reuse remain research proposals. They were not added as nonfunctional options. They need dedicated formula/backend designs and hardware validation, and have no established benefit on this device. ARM11 still lacks NEON; this pass does not claim SIMD acceleration.
+
+In the recorded cache samples, 0–513 of 1,500 moving-preview pixels changed, with maximum channel difference up to 69/255. Some scene timings were effectively unchanged. Keep this experiment off if those artifacts outweigh its modest potential benefit.
+
+The reuse counter combines historical-ray reuse with distance-cache query hits; those are different units. Use the dedicated CSV query counts when comparing the distance-field experiment.
+
+
+## Point lights, thin-lens optics and progressive accumulation
+
+Two optional RGB point lights use a finite-range inverse-square-like falloff: intensity times `(1-distance/range)^2 / (1+distance^2)`. Camera-relative positions are resolved once per view in the right/up/forward basis; world positions remain fixed. Direct diffuse and specular contributions are cached separately. SUN STRENGTH scales the directional diffuse/specular terms while retaining the existing ambient term. Optional point shadows march toward each light using SHADOW STEPS, stop at periodic-cell boundaries, and treat exhausted rays as occluded. They can be expensive and can darken surfaces when the step limit is insufficient. Secondary diffuse bounces can receive point-light contributions, with the same optional point-shadow limits. Point lights are illumination sources, not visible emissive spheres or area lights.
+
+DEPTH OF FIELD is a sampled thin lens. Lens offsets lie on a deterministic disk in the camera right/up plane. Each offset ray targets the same point on the forward-depth focus plane as its pinhole counterpart; stereo eye offsets and the off-axis projection are retained. Aperture is a world-space radius. Zero aperture preserves the pinhole ray. Lens sampling is disabled during movement independently of the fast-lighting switch. Stationary sample count is the greater of QUALITY SAMPLES and LENS SAMPLES, rather than their product; quarter-pixel positions repeat while lens positions vary. Raw radiance is averaged before display clipping for lens renders. Large apertures and few samples can produce structured blur/aliasing; there is no autofocus or physically calibrated f-stop model.
+
+PROGRESSIVE LIGHTING repeats the final stationary resolution pass up to LIGHTING PASSES (1–128), varying deterministic hemisphere and lens sequences. Coarse refinement is performed first when AUTO REFINE is enabled; otherwise accumulation occurs at the selected preview block size. Each completed pass has equal weight. Floating-point RGB sums are allocated lazily (about 2.3 MiB for both eyes) and reset logically on motion, edits and eye-strength/stereo transitions. The first pass replaces stale sums, so old viewpoints are never blended. Progress reports the whole accumulation sequence after spatial refinement; FILES reports fully completed passes. After the limit, the image is idle. These are bounded one-bounce/skylight samples, with all previous approximation limits; accumulation reduces sampling variation, not systematic distance-estimator or light-transport errors.
+
+Both new lens and accumulated images are rejected by surface capture and geometry-based material recoloring. Point-lit single-sample pinhole images can still be captured/recolored; changing light settings retraces and GPU lighting remains baked. Adaptive tile skipping is bypassed for lens and accumulated stationary rendering. Motion returns to the normal pinhole preview and temporal history path. Parallel jobs have deterministic per-pixel/pass sequences and produce the same accumulated stereo image as serial dispatch.
+
+Batch budgeting now estimates cost per pixel job rather than per individual lens/quality ray; this avoids scheduling a full nominal batch of many-sample jobs based on a single-ray cost. One stereo job pair can still exceed the requested time budget on a difficult scene. Benchmarks use smaller job batches for large lens sample counts. They benchmark one view/sample group, not the full progressive sequence; CSV records lens/light/progressive settings for interpretation.
+
+Scene format v6 appends OPTICS and two POINT records, validates all ranges, and reads v1–v5 with the new effects disabled. Previous versions cannot read v6. Optical state and lights are saved; accumulated pixels/sums are not. The console UI exposes both light entries without restarting a render merely to switch the light being edited. Color edits to lights and sky do not implicitly change the orbit-gradient mode.
+
+Validation includes focus-plane convergence for both eyes, zero-aperture equivalence, camera/world light placement, bounded shadow work, HDR retention, lens movement bypass, exact progressive stereo coverage/averaging, serial/parallel agreement, reset behavior and legacy scene loading. All 36 default preset images and the UI fixture remain byte-identical with the new effects off. Run `optics_preview output-prefix` to reproduce visual examples; its reported times are desktop render costs, not console performance claims. On hardware, check light edits, shadow cost, focus/convergence comfort, movement interruption, accumulation limits, scene load/save, memory pressure and GPU capture rejection.
+
+`benchmark-experiments.csv` remains the recorded corridor-pass snapshot. The optics preview utility reports current render costs and exports example scene settings; its costs include the full view/pass sequence and are desktop-only.
+
+Lens and accumulated stationary samples are excluded from temporal surface history. Moving pinhole samples can still participate in the optional temporal experiment; accumulation resets before movement reuse.
+
+## Color, glow and completed-pass timing
+
+COLOR has 2–5 evenly spaced gradient stops. Tap any color to open the hue/saturation
+wheel; the vertical slider changes brightness. A applies and B cancels. The D-pad
+changes hue/saturation and L/R changes brightness. Light and sky colors use the same picker.
+BOUNDED COLOR MAP transforms the orbit trap with t/(1+t), preventing traps above
+one from all clipping to the endpoint. It defaults on in new scenes. Older scenes retain
+legacy mapping; enable bounded mapping explicitly to update them.
+AUTO FIT GRADIENT uses the 5th–95th percentiles of cached visible orbit values,
+then adjusts scale/offset. Finish a single-sample pinhole render first; unavailable
+with moving, multisample lens or accumulated GI records. Flat traps cannot be fitted.
+Negative GRADIENT SCALE reverses the mapped direction. Repeat wraps the ramp.
+
+COLOR EMISSION adds the material color independently of surface lighting, and
+secondary indirect hits include that emission when GI is enabled. It is an artistic
+approximation, not energy-conserving path tracing. BLOOM HALO adds a separable
+13-pixel screen-space bright-pass blur after each stationary resolution/lighting pass.
+Bloom is skipped during motion and cannot be GPU-captured or material-recolored;
+bloom changes retrace the scene. Strength defaults to zero. Normal emission can recolor.
+
+FILES -> LAST FRAME MS records wall-clock duration of the latest completed resolution
+pass (all active eyes), including UI/vblank waits and stationary bloom. LAST FRAME
+SCALE / EYES identifies the pass. LAST REALTIME FRAME MS / SCALE retain the most
+recent completed moving sweep even after still refinement. This is a progressive sweep
+while the camera moves, not a simultaneous snapshot of one camera pose. A canceled
+pass never replaces the measurement. Scene/stereo/resolution changes restart timing.
+Measurements start at the first tracing batch, not at scene invalidation.
+
+Experimental ranges are widened: iterations 256, ray/shadow/GI steps 4096,
+GI/AO samples 64, lighting passes 4096, exposure/sun/emission/bloom 100,
+far clip 10000, gradient scale/offset +/-10000. Numeric A entry accepts the new
+ranges. Basic mathematical, finite-value, memory and discrete layout constraints
+remain enforced. Extreme values can cost much more time or break heuristic tracing.
+Scenes now save as v7; v1–v6 load with legacy two-color mapping and no emission/bloom.
+
+START now saves screenshots instead of exiting. FILES -> SAVE SCREENSHOT does the
+same. Images go to sdmc:/3ds/Re-fract/screenshots/: shot-TIME.jpg is the top screen,
+shot-TIME-screens.jpg includes both screens, and shot-TIME.mpo contains left/right
+views when stereo is active (slider above 2D). No Camera album registration is used.
+Stereo MPO uses MPF disparity entries and ordered left/right individual image numbers.
+Screenshots can capture partial renders. GPU navigation uses synchronized target readback.
+FILES -> EXIT APP returns home after joining the worker and synchronizing GPU cleanup.
+The reported START crash has not been reproduced on hardware; START no longer enters
+that exit path. Screenshot saving cancels the current timing sweep so SD I/O is not
+included in the next completed-frame measurement. JPEG encoding uses stb_image_write
+(nothings/stb, blob e4b32ed1bc32ef9c962acbf47a9d10af01939e08), its license is retained.
+
+Progressive lighting now starts at COLOR -> LIGHTING BLOCK (default 4X), with
+16 passes by default. 8X/16X trade spatial detail for faster visible convergence;
+1X is the expensive full-resolution choice. QUALITY MODE forces 1X. Earlier coarse
+refinement passes omit indirect rays and lens sampling. Each finished batch updates
+the display immediately; movement still resets accumulation. With AUTO REFINE off,
+accumulation uses the selected preview block directly. This improves feedback, but
+GI remains CPU tracing and is not instantaneous realtime global illumination.
+
+The vendored JPEG bit accumulator uses unsigned shifts to avoid signed-shift undefined behavior.
+
+## Visible sky and optional upscaling
+
+COLOR -> SKY COLOR now controls the visible miss background, fog color and existing
+indirect skylight. Exposure affects the visible sky too. Cached background records
+let sky/exposure edits recolor a completed single-sample image when indirect lighting
+is disabled. Invalid formula pixels remain diagnostic magenta.
+
+RENDER -> STILL BLOCK selects the stationary refinement endpoint (1/2/4/8/16).
+At 2X the mono ray grid is 200x120, displayed as 400x240. AUTO REFINE must be on
+for a larger preview block to refine down to that endpoint. With AUTO REFINE off,
+the selected PREVIEW BLOCK is the render resolution; this now includes 2X.
+QUALITY MODE overrides the endpoint and renders 1X. Progressive lighting uses the
+coarser of STILL BLOCK and LIGHTING BLOCK; select LIGHTING BLOCK 2 for 2X GI.
+
+UPSCALING selects NEAREST, BILINEAR or BICUBIC (Catmull-Rom). The separable filters
+use precomputed weights, clamp at image edges, and share the existing parallel worker.
+They reconstruct from block-center samples without extra fractal evaluations. Each eye
+is filtered independently. Screenshots and PPM exports use the displayed upscaled image;
+GPU surface capture continues to use the original depth/color geometry anchors.
+
+Upscaling runs once per completed resolution pass and is included in LAST FRAME MS.
+During moving sweeps, the preceding finished smooth image remains visible until the
+next sweep completes. Progressive accumulation batches may show raw block previews
+between filtered completed passes. No additional smoothing occurs at 1X. Bicubic can
+soften narrow connections or ring at high-contrast edges; compare bilinear or nearest.
+Lazy display buffers and the separable temporary buffer add about 1.2MiB for stereo 2X.
+Scene format v8 reads v1-v7; earlier scenes default to nearest and a 1X still endpoint.
+
+## Adaptive empty-space sampling (optional)
+
+RENDER -> ADAPT EMPTY SPACE reduces primary ray work in stationary refinement and
+progressive passes. SKY PROBE EVERY N defaults to 8: one in eight cells in confirmed
+sky regions is traced; the rest reuse the exact sky radiance. A region qualifies only
+if all nine neighboring samples genuinely reach FAR CLIP without hitting geometry.
+Step-budget exhaustion, formula failures and neighborhoods with detected surfaces do
+not qualify. This conservative border protects most detected thin connections.
+
+Probe patterns rotate between lighting passes, every fourth stationary pass refreshes
+densely, and a new hit disables sparse sampling in its neighborhood for subsequent
+passes. Skipped progressive sky cells contribute the correct HDR sum, rather than
+reducing brightness as passes accumulate. Empty masks reset after camera movement,
+geometry/setting changes, stereo changes or resolution restarts. Motion and Quality
+Mode use dense primary sampling. This is a heuristic: small geometry missed by the
+initial samples can also be missed by sparse probes, so the option defaults OFF.
+Use a smaller N or disable it when assessing delicate threads. Scene format v9 reads
+v1-v8; previous scenes default to dense empty-space sampling.
+
+ADAPT SKY EDGES additionally permits sparse sampling around known escaped center
+samples when at least five of their nine neighbors are also escaped sky. These mixed
+sky/surface neighborhoods trace at least half their cells, even when interior sky uses
+one in eight. This targets expensive near-silhouette misses. It is more aggressive and
+can remove narrow geometry between sampled rays; it defaults OFF independently.
+Regular probes and every fourth pass remain dense; motion and Quality Mode disable it.
+
+Configurable controls: SKY PROBE EVERY N (1–64, default 8), EDGE PROBE EVERY N
+(1–64, default 2), SKY NEIGHBORS NEEDED (1–9, default 5) and DENSE REFRESH PASSES
+(0–256, default 4; zero disables dense refresh). N=1 traces every cell. Higher N
+reduces sampling and raises the risk of missing detail. Raising the neighbor requirement
+makes edge classification stricter; nine is equivalent to the conservative interior test.
+FILES -> SKY CELLS SKIPPED reports this optimization separately from other tile reuse.
+
+
+## Cached and adaptive indirect lighting
+
+`SEPARATE GI RES` (LIGHT page) traces geometry/direct lighting at STILL BLOCK,
+then calculates indirect lighting using cached hits at LIGHTING BLOCK. Set
+STILL BLOCK 2 and LIGHTING BLOCK 4 or 8 to retain sharper geometry while reducing
+GI work. Depth and normal checks reject interpolation across discontinuities.
+At rejected edges GI may be weaker; decrease LIGHTING BLOCK to improve this.
+Primary hits, normals, AO, direct shadows and point lighting are reused across
+GI passes. Changed lighting tiles appear after each batch, without waiting
+for a complete lighting sweep. PROGRESSIVE LIGHTING varies hemisphere samples over LIGHTING PASSES.
+Without progressive mode, a single indirect pass is performed. Each stereo eye
+has its own cache. Motion, Quality Mode and depth of field use the original
+tracing path; cached hits cannot describe moving lens rays.
+
+`ADAPT GI SAMPLES` requires SEPARATE GI RES. Welford variance estimates the
+standard error of each cell's mean indirect lighting. After GI MIN PASSES
+(default 4), cells pause sampling when their maximum channel error is below
+GI ERROR THRESHOLD * (0.1 + maximum mean channel). Default threshold 0.03.
+GI REFRESH PASSES (default 8, 0 disables refresh) revisits stable cells to reduce
+premature convergence. Samples are averaged by their actual counts, including
+refresh samples. Finite low-discrepancy samples can underestimate variance;
+use a higher minimum and lower threshold for demanding scenes. Sky cells do
+not run GI. GI DEPTH EDGE (default 0.08 relative depth) controls interpolation
+and the depth-prepass flatness test. FILES counters report GI skips, cached
+reuse, DE queries, depth starts and short-budget retries.
+
+## Coarse depth starts and ray budgets
+
+DEPTH PREPASS (RENDER) adds a PREPASS BLOCK sweep before refinement when
+AUTO REFINE is enabled. The initial sweep uses cheap preview shading rather
+than computing normals, shadows and GI that refinement would replace. Smooth 3x3 hit neighborhoods seed finer rays from the
+minimum neighboring depth times PREPASS START FRACTION (default 0.5). The
+snapshot is separate from the image being refined. Discontinuous or sky
+neighborhoods start at the camera. Seeded misses retry from the camera.
+This is a heuristic: a small unseen foreground object can still be skipped by
+a seeded ray that hits a surface behind it. Keep off for thin Kleinian threads,
+or lower the start fraction (0 disables depth starts). Motion, Quality Mode
+and DOF do not use depth starts. Sparse prepasses can cost more than they save
+on already cheap scenes; compare DE queries and LAST FRAME MS.
+
+ADAPT RAY BUDGET limits rays in confirmed 3x3 coarse sky neighborhoods to
+SKY RAY MIN STEPS (default 16). RETRY SHORT RAYS defaults ON: uncertain rays
+continue with the full configured budget, preserving the original march
+result. This safe mode does not reduce the total work of unresolved misses.
+Turn retry OFF for the experimental performance tradeoff: unresolved rays
+become background, but are never marked as confirmed escaped sky. This can
+remove small/distant geometry. Works on stationary refinement after a coarse
+sweep, independently of ADAPT EMPTY SPACE; motion and Quality Mode stay dense.
+
+## Specialized formula loops
+
+Validated bulb-plus-scale and Menger pipelines now use fixed operation loops;
+Kleinian fold/inversion is fused and reuses squared radius between folding,
+trap calculation and inversion. Enabled stage order, parameters, Julia modes,
+repetition and terminal shapes retain their semantics. Unrecognized edited
+pipelines use the generic interpreter. Exact bulb evaluation retains its
+reference angular path. Specialized paths are automatic and differential
+unit tests compare their distance and trap values against the interpreter.
+
+All new approximation/sampling switches default OFF. These options are not
+promises of speedups: lighting reconstruction, prepasses and variance storage
+have overhead. Test on the actual console with identical scenes/settings.
+
+
+## Scaling-mode stability and reuse
+
+Filter coefficient tables now live in a reusable heap workspace, rather than
+large local arrays. ARM compiler stack reports show upscaleImage's frame
+reduced from 20,672 bytes to 224 bytes. Renderer::step uses 8,496 bytes; the
+old nested combination left very little room in the original 32 KiB main
+stack. The main stack now has 64 KiB of headroom. This addresses a plausible
+console stack overflow; hardware verification is still required.
+
+Filter tables and horizontal scratch buffers are reused across passes and
+stereo eyes. Switching UPSCALING on a completed CPU frame now re-presents
+that frame without tracing it again. During an active pass, the new filter
+applies at the next completed pass. Geometry resolution changes still retrace.

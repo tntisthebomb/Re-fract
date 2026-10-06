@@ -4,7 +4,7 @@ A customizable stereoscopic fractal laboratory for New Nintendo 3DS homebrew, wi
 
 ## Features
 
-- 24 presets across Mandelbulb, Mandelbox, Julia, Menger, Sierpinski and hybrid families. Some entries are parameter variations, not separate mathematical families.
+- 36 presets across Mandelbulb, Mandelbox, Julia, Menger, Sierpinski and hybrid families. Some entries are parameter variations, not separate mathematical families.
 - Optional infinite periodic world repetition with separate X/Y/Z spacing; zero spacing leaves that axis unwrapped.
 - Up to 12 editable formula stages: folds, spherical power, scaling, rotations, offsets, absolute/sort operations, Menger and tetrahedral transforms, and custom expressions.
 - Separate off-axis left/right cameras with slider-controlled stereo strength and adjustable convergence. Slider zero uses one render for both eyes.
@@ -13,7 +13,11 @@ A customizable stereoscopic fractal laboratory for New Nintendo 3DS homebrew, wi
 - Configurable iterations, bailout, distance estimator, derivative scale, step safety, ray steps, lighting, ambient occlusion, shadows, palettes, fog, exposure, camera and stereo geometry.
 - New 3DS high-speed request and optional CPU 2 worker. Both CPUs claim jobs from a shared queue in mono and stereo modes, with automatic serial fallback. Batch size adapts to measured work cost.
 - Completed single-sample images support trace-free gradient edits, with parallel recoloring at fine resolution and one color evaluation per coarse block. Polynomial expression Julia formulas have direct derivative kernels; edited formulas retain the general interpreter.
-- Optional GPU surface-cache navigation: capture a completed traced view, then use PICA200 triangles/depth testing and independent stereo projections to move without retracing. Hidden geometry is absent; lighting/colors are baked. Resume CPU rendering to refresh the cache.
+- Zoom-aware hit precision and optional motion/detail iteration limits; an experimental open-space distance cache for moving previews.
+- Optional one-bounce indirect lighting with sky color and bounded secondary tracing.
+- Two configurable RGB point lights, optional point shadows, sampled depth of field and stationary progressive lighting.
+- On-console frozen-view benchmarks with CSV exports and separate moving-preview tests.
+- Optional GPU surface-cache navigation: capture a completed traced view, then use PICA200 triangles/depth testing and independent stereo projections to move without retracing. Hidden geometry is absent; lighting/colors are baked. Resume CPU rendering to refresh the cache, or enable automatic recapture after movement stops.
 - Optional algebraic Mandelbulb math for powers 2/4/8/16 with standard angular multipliers. Quality mode retains the original trigonometric path.
 - Eight SD scene slots and PPM stereo-pair export. Saved scenes include custom expressions and all settings.
 
@@ -113,3 +117,54 @@ make cia MAKEROM=.tools/bin/makerom
 The model's dimensions fit the HOME Menu banner camera, and the generator checks the 512 KiB CGFX size limit. The actual HOME Menu appearance and looping playback still need console validation. No additional flat banner image is needed. The in-app UI texture remains procedural.
 
 The project currently has no assigned license. Choose one before distributing code under a specific license.
+
+## Corridor and lighting pass
+
+The twelve new presets include Ruby Chambers, Blue Sphere Vault, Gold Box Corridor, Menger Colonnade, Twisted Box Hall, Inverted Bubble Hall, Tetra Gallery, Julia Bulb Arcade, Bulb Garden, Absolute Bulb / 5, Box-Bulb / 4 and Negative Box / Deep. They provide starting camera positions and color/render settings. The corridor presets use editable periodic worlds; they approximate the attached styles rather than reconstructing the original formulas or materials. Loading a new preset applies its settings, including turning indirect lighting off.
+
+For close-ups, enable **ZOOM PRECISION EXP**; try **MIN HIT EPSILON 0.000001** and **PIXEL TOLERANCE 0.25**. **ADAPT DETAIL EXP** optionally reduces moving iterations and adds stationary detail near the camera. These controls can increase rendering cost and change the surface; they are not an unlimited deep-zoom solution.
+
+Under COLOR, **INDIRECT SAMPLES 1** enables a bounded diffuse-bounce/skylight approximation. Start with **INDIRECT STEPS 16**, **INDIRECT STRENGTH 0.5**, **INDIRECT RANGE 2**. Set samples to zero to disable it. Four samples are slower; quality samples multiply this work. Fast moving lighting skips indirect tracing.
+
+Under FILES, run **BENCH CURRENT VIEW** or **BENCH MOVE PREVIEW**. Each evaluates a frozen 1,500-position mono grid, honors the selected quality/sample settings, and writes `sdmc:/3ds/Re-fract/benchmark-N.csv` for the selected scene slot. The benchmark pauses normal CPU rendering. It reports active tracing throughput, not displayed FPS. Use the moving benchmark with a completed distance cache to compare that experiment.
+
+Scenes now save as format v6 and still load v1–v5. Previous app versions cannot load v6 scenes. See [PERFORMANCE.md](docs/PERFORMANCE.md) for limits and hardware checks.
+
+## Point lights, depth of field and progressive lighting
+
+**COLOR → EDIT POINT LIGHT** selects one of two lights. Enable **POINT LIGHT ENABLED**; adjust position, color, intensity and range. **CAMERA RELATIVE LIGHT** makes X/Y/Z offsets mean right/up/forward from the camera (default position 0,1,0). Turn it off to use world coordinates. **POINT SHADOWS** uses RENDER → SHADOW STEPS; start with 16. **SUN STRENGTH** controls the existing directional light; a small value helps local lights stand out. Fast moving lighting skips all surface lighting; disable that shortcut if you need lit navigation. GPU captures bake point lighting and need recapture after movement, including camera-relative lights.
+
+**RENDER → DEPTH OF FIELD** enables a sampled thin lens while stationary. **LENS APERTURE** is the lens radius in world units: start at 0.03–0.05. **FOCUS DISTANCE** is forward depth from the camera, not distance along a slanted ray. **LENS SAMPLES 4** is a starting point; more samples smooth blur and cost more rays. **FOCUS AT CONVERGENCE** matches the stereo convergence distance. Movement uses pinhole rays. Depth of field cannot be captured into the GPU surface cache.
+
+**COLOR → PROGRESSIVE LIGHTING** adds repeated stationary passes with varied indirect-light samples and floating-point accumulation before display clipping. Enabling it in the menu sets INDIRECT SAMPLES to 1 if they were zero. Start with **LIGHTING PASSES 8–16**. It also improves lens sampling when depth of field is active. Camera movement, scene edits and stereo changes restart accumulation. FILES shows completed lighting passes; rendering stops at the selected limit. This remains the existing bounded diffuse-bounce approximation, not full path tracing. GPU capture and cached material recoloring are disabled for accumulated images.
+
+These features are off by default and can increase rendering time substantially. The CIA/3DSX builds are tested; final performance and stereo comfort still require console testing. Run the portable `optics_preview` target with an output prefix to reproduce point-light, lens and progressive examples.
+
+### Color and screenshot update
+
+COLOR now offers a touch hue/saturation wheel with brightness, 2–5 gradient stops,
+a bounded orbit mapping and Auto Fit Gradient. Color Emission and optional stationary
+Bloom Halo make materials glow. FILES displays the most recent completed resolution
+pass time and retains the last realtime sweep time/scale independently of still renders.
+Progressive lighting defaults to a 4X lighting block rather than waiting for full resolution;
+choose 8X for faster feedback or 1X/Quality for a finished image. Numerical ranges are
+substantially wider; mathematical and memory constraints still apply.
+
+START saves JPEG screenshots and, with active stereo, a 3D MPO in
+`sdmc:/3ds/Re-fract/screenshots/`. Files include a top-only JPEG and a JPEG of both
+screens. No Camera album registration is required. FILES -> Exit App replaces START
+as the exit action. Scene files save as v7 and read v1–v6. See docs/PERFORMANCE.md.
+
+Sky Color now changes the visible background and fog. For a faster stationary image,
+set RENDER -> STILL BLOCK 2, AUTO REFINE ON, QUALITY MODE OFF and UPSCALING BICUBIC.
+Use LIGHTING BLOCK 2 too if progressive lighting is enabled. Screenshots preserve the
+upscaled stereo output. Display settings save in scene format v8; old scenes still load.
+
+Optional RENDER -> ADAPT EMPTY SPACE sparsely probes confirmed sky during stationary
+refinement/progressive passes. Try SKY PROBE EVERY N 8; motion and Quality Mode stay
+dense. This saves void rays but can miss tiny geometry, so it defaults off. Saves are v9.
+
+Additional performance controls: cached GI with independent lighting resolution,
+variance-based progressive GI sampling, optional coarse-depth ray starts and
+adaptive sky ray budgets. See docs/PERFORMANCE.md for controls and tradeoffs.
+Scene format v10 preserves these controls and reads older scenes.

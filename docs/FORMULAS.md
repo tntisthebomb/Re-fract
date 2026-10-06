@@ -81,3 +81,45 @@ Additional presets 18–23:
 7. Try every preset and high-quality mode. Record sustained render times and behavior after sleep/resume.
 8. Enable GPU SURFACE CACHE, finish a single-sample stationary render and capture it. Confirm geometry, orientation, depth testing, slider-at-2D behavior, independent stereo views, bottom UI and CPU resume. Check repeated switching and low-memory fallback. Holes/disocclusion and baked lighting are expected limitations.
 9. Compare ALGEBRAIC BULB EXP on/off in live previews. Confirm quality mode uses the original math. Record GPU DRAW MS and UI FRAME / TRACE MS separately; these do not measure complete-fractal FPS.
+
+## Additional corridor presets (24–35, zero-based)
+
+| Preset | Editable construction |
+| --- | --- |
+| Ruby Chambers | Negative box scale −1.5, radii 0.5/1, 14 iterations, repeated every 12 units |
+| Blue Sphere Vault | Negative box scale −1.8, radii 0.32/1, repeated every 12 |
+| Gold Box Corridor | Box scale 2.8, radii 0.5/1, repeated every 12 |
+| Menger Colonnade | Menger scale 3, 7 iterations, repeated every 3.2 |
+| Twisted Box Hall | Rotate (0.03, 0.08, 0.02), box scale 2, repeated every 12 |
+| Inverted Bubble Hall | Negative box scale −1.8, radii 0.12/1, repeated every 12 |
+| Tetra Gallery | Tetra fold, scale 2, offset (−1,−1,−1), repeated every 5 |
+| Julia Bulb Arcade | Bulb 8, Julia (0.25,−0.15,0.1), repeated every 3.5 |
+| Bulb Garden | Bulb 8, 12 iterations, repeated every 3.5 |
+| Absolute Bulb / 5 | Absolute fold, bulb 5, 12 iterations |
+| Box-Bulb / 4 | Box fold 1, bulb 4, 10 iterations |
+| Negative Box / Deep | Negative box −1.5, 20 iterations, closer starting camera |
+
+Periodic cells are finite copies of the selected formula, not an analytically generated corridor or recovered source image. All stage values, repeat spacings, camera and gradients remain editable.
+
+## Pseudo-Kleinian chambers (presets 36–39)
+
+KLEINIAN CHAMBERS, KLEINIAN CORRIDOR, KLEINIAN DROPS and KLEINIAN GALLERY
+use an anisotropic box fold followed by sphere inversion. They are the
+pseudo-Kleinian artistic family, not a general quaternion/Mobius group solver.
+The fold reflects each component as `2*clamp(z,-extent,extent)-z`.
+SPHERE INVERSION uses `k=max(radius²/dot(z,z),1)` and multiplies both the
+orbit and derivative by k. A small denominator guard keeps the singular origin finite.
+Terminal shape 3 uses `max(length(z.xy)-terminalRadius,abs(length(z.xy)*z.z)/length(z))/dr`.
+This is a heuristic distance estimator; step safety defaults to 0.45 for these scenes.
+
+Adjust STAGES -> FOLD X/Y/Z and INVERSION RADIUS to change chambers and openings.
+FORMULA -> TERMINAL RADIUS changes the final cross-section. More ITERATIONS reveal
+smaller detail but cost rendering time. Start at 12; try 16–20 for still images.
+The mathematical construction itself generates chambers without periodic-cell copies.
+Existing lights, depth of field, progressive illumination, stereo and save/load work normally.
+The four presets are built into the executable; no SD-card examples are required.
+New operation IDs are appended, preserving all previous scene IDs and presets.
+Older builds cannot load scenes containing these new operations/terminal shape.
+
+Background: Knighty/Theli-at pseudo-Kleinian family, described by Mikael Hvidtfeldt
+Christensen: https://blog.hvidtfeldts.net/index.php/2012/05/distance-estimated-3d-fractals-part-viii-epilogue/

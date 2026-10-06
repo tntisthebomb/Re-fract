@@ -4,6 +4,25 @@
 #include <algorithm>
 
 namespace rf {
+Vec hsvColor(float h,float s,float v){
+ h=h-std::floor(h);s=clamp(s,0,1);v=clamp(v,0,1);float x=h*6;int i=int(x);float f=x-i,p=v*(1-s),q=v*(1-s*f),t=v*(1-s*(1-f));
+ switch(i){case 0:return {v,t,p};case 1:return {q,v,p};case 2:return {p,v,t};case 3:return {p,q,v};case 4:return {t,p,v};default:return {v,p,q};}
+}
+Vec colorHSV(Vec c){float hi=std::fmax(c.x,std::fmax(c.y,c.z)),lo=std::fmin(c.x,std::fmin(c.y,c.z)),d=hi-lo,h=0;
+ if(d>1e-6f){h=hi==c.x?(c.y-c.z)/d:hi==c.y?2+(c.z-c.x)/d:4+(c.x-c.y)/d;h/=6;if(h<0)h+=1;}
+ return {h,hi>0?d/hi:0,hi};
+}
+void drawColorPicker(Canvas& c,float h,float s,float v){
+ c.rect(0,0,320,240,{24,22,19});c.text(12,8,"COLOR WHEEL",{230,220,190},2);
+ auto rgb=[](Vec p){return Color{uint8_t(p.x*255+.5f),uint8_t(p.y*255+.5f),uint8_t(p.z*255+.5f)};};
+ for(int y=36;y<=196;++y)for(int x=12;x<=172;++x){float dx=x-92,dy=y-116,r=std::sqrt(dx*dx+dy*dy);if(r<=80)c.point(x,y,rgb(hsvColor(std::atan2(dy,dx)/6.2831853f,r/80,v)));}
+ for(int y=45;y<=180;++y)c.rect(196,y,30,1,rgb(hsvColor(h,s,1-float(y-45)/135)));
+ int mx=92+int(78*s*std::cos(h*6.2831853f)),my=116+int(78*s*std::sin(h*6.2831853f));c.rect(mx-3,my-3,7,7,{255,255,255});c.rect(mx-1,my-1,3,3,{0,0,0});
+ int by=45+int((1-v)*135);c.rect(193,by-1,36,3,{255,255,255});c.rect(244,48,58,58,rgb(hsvColor(h,s,v)));
+ c.text(188,190,"BRIGHTNESS",{230,220,190});c.text(12,204,"PAD: HUE / SAT   L/R: VALUE",{230,220,190});
+ c.rect(12,222,130,16,{95,75,40});c.text(22,226,"B CANCEL",{255,240,200});c.rect(176,222,132,16,{95,75,40});c.text(186,226,"A APPLY",{255,240,200});
+}
+
 namespace {
 // Hand-drawn 5x7 uppercase stencil. Bits are horizontal, MSB at the left.
 const char* glyph(char c){

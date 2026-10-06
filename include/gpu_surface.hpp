@@ -16,6 +16,7 @@ class GpuSurface {
  bool draw(const Scene& scene,float slider);
  void synchronize();
  void shutdown();
+ bool screenshot(int eye,std::vector<Color>& pixels);
  bool available()const{return ready&&count>0;}
  int triangles()const{return count/3;}
  float drawingMs()const{return initialized?C3D_GetDrawingTime():0;}
