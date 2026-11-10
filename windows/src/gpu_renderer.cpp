@@ -742,7 +742,7 @@ bool GpuRenderer::begin(const Scene& scene,float eyeOffset,std::string& error){
  // so a richer program also serves a lighter preview scene without a recompile.
  std::map<std::string,Program>::iterator it=m.programs.end();int bestBits=99;
  for(unsigned v=0;v<16;++v){if((v&need)!=need)continue;
-  auto hit=m.programs.find(base+char('a'+v));int bits=__builtin_popcount(v);
+  auto hit=m.programs.find(base+char('a'+v));int bits=0;for(unsigned t=unsigned(v);t;t&=t-1)++bits; // portable popcount (MSVC has no __builtin_popcount)
   if(hit!=m.programs.end()&&bits<bestBits){it=hit;bestBits=bits;}}
  if(it==m.programs.end()){
   std::string src=generateFragment(f,need);
