@@ -15,6 +15,7 @@
 #include <climits>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <unordered_map>
@@ -570,6 +571,7 @@ bool separateActive(const Settings& s){return !volumetricActive(s)&&s.separateLi
 int passCount(const Settings& s){return lightingProgressive(s)?std::max(1,s.lightingPasses):refineActive(s)?std::max(1,s.refineSamples):1;}
 unsigned featuresOf(const Scene& scene){
  const Settings& o=scene.settings;unsigned f=0;
+ if(std::getenv("RF_GPU_ALL_FEATURES"))return FeatGI|FeatFog|FeatPoint|FeatLens; // profiling aid: compile every feature in
  if(o.giSamples>0&&o.giStrength>0)f|=FeatGI;
  if(volumetricActive(o))f|=FeatFog;
  for(const PointLight& l:o.pointLights)if(l.enabled&&l.intensity>0)f|=FeatPoint;
