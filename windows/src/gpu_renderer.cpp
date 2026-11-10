@@ -147,6 +147,18 @@ void genStage(std::string& o,const Formula& f,const Stage& s,int i){
 // Feature bits compiled into the shader so disabled features cost nothing per pixel (toggling one recompiles).
 enum Feature:unsigned {FeatGI=1,FeatFog=2,FeatPoint=4,FeatLens=8};
 
+// Structural cache key of a formula: every field generateFragment() reads (numeric stage parameters are uniforms).
+std::string structKey(const Formula& f){
+ std::string k;
+ auto put=[&](const void* p,size_t n){k.append(static_cast<const char*>(p),n);};
+ auto i32=[&](int v){put(&v,sizeof v);};
+ i32(f.repeat);i32(f.julia);i32(f.algebraicBulb);i32(f.logarithmic);i32(f.terminal);i32(f.activeCount);
+ for(int i=0;i<f.activeCount;++i){const Stage& st=f.stages[f.active[i]];i32(int(st.kind));
+  if(st.kind==Kind::Expression)for(int j=0;j<3;++j){const Expression& e=st.expr[j];i32(e.count);
+   for(int n=0;n<e.count;++n){i32(int(e.code[n].op));i32(e.code[n].variable);put(&e.code[n].value,sizeof(float));}}}
+ return k;
+}
+
 std::string generateFragment(const Formula& f,unsigned feat){
  int n=std::max(1,f.activeCount);
  std::string N=std::to_string(n),o;
@@ -659,6 +671,7 @@ struct GpuRenderer::Impl {
 GpuRenderer::GpuRenderer(){impl=new Impl;}
 GpuRenderer::~GpuRenderer(){delete impl;}
 
+static GLint gMaxUniformComponents=0;
 bool GpuRenderer::supports(const Scene& scene,std::string& reason){
  const Formula& f=scene.formula;const Settings& o=scene.settings;
  auto no=[&](const char* why){reason=why;return false;};
@@ -668,8 +681,8 @@ bool GpuRenderer::supports(const Scene& scene,std::string& reason){
   if(int(st.kind)<0||st.kind>=Kind::Count)return no("unknown stage kind");
   if(st.kind==Kind::Expression)for(int j=0;j<3;++j){exprCode+=st.expr[j].count;if(st.expr[j].stack>32)return no("expression stack above 32");}
  }
- if(SDL_GL_GetCurrentContext()){ // each stage needs 3 vec4 + a mat3 (3 vec4) of uniforms
-  GLint comps=0;glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_COMPONENTS,&comps);
+ { // each stage needs 3 vec4 + a mat3 (3 vec4) of uniforms; limit queried once in init()
+  GLint comps=gMaxUniformComponents;
   if(comps>0&&(6*f.activeCount+48)*4>comps)return no("stage count exceeds the GPU uniform limit");
  }
  if(exprCode>1200)return no("expression stages too large for the shader generator");
@@ -682,6 +695,7 @@ bool GpuRenderer::init(std::string& error){
  if(impl->inited)return true;
  const char* r=reinterpret_cast<const char*>(glGetString(GL_RENDERER));
  impl->renderer=r?r:"unknown";
+ glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_COMPONENTS,&gMaxUniformComponents);
  glGenVertexArrays(1,&impl->vao);
  if(!impl->vao){error="could not create vertex array";return false;}
  impl->inited=true;return true;
@@ -719,14 +733,22 @@ bool GpuRenderer::begin(const Scene& scene,float eyeOffset,std::string& error){
  const Formula& f=scene.formula;
  if(f.activeCount<1||f.activeCount>MaxStages){error="formula has no active stages (call Formula::validate)";return false;}
  if(m.width<1){error="resize() has not been called";return false;}
- std::string src=generateFragment(f,featuresOf(scene));
- auto it=m.programs.find(src);
+ // Cheap structural key (no GLSL generation): everything generateFragment() bakes in, plus the feature set.
+ const std::string base=structKey(f);
+ const unsigned need=featuresOf(scene);
+ // Reuse the cheapest cached variant that has (at least) the needed features; disabled features are uniform-gated,
+ // so a richer program also serves a lighter preview scene without a recompile.
+ std::map<std::string,Program>::iterator it=m.programs.end();int bestBits=99;
+ for(unsigned v=0;v<16;++v){if((v&need)!=need)continue;
+  auto hit=m.programs.find(base+char('a'+v));int bits=__builtin_popcount(v);
+  if(hit!=m.programs.end()&&bits<bestBits){it=hit;bestBits=bits;}}
  if(it==m.programs.end()){
+  std::string src=generateFragment(f,need);
   Program prog;if(!build(prog,src,error))return false;
   // Keep the cache small; never drop the program currently in use.
-  while(m.programs.size()>=6){auto victim=m.programs.begin();if(&victim->second==m.current)++victim;
+  while(m.programs.size()>=10){auto victim=m.programs.begin();if(&victim->second==m.current)++victim;
    if(victim==m.programs.end())break;glDeleteProgram(victim->second.id);m.programs.erase(victim);}
-  it=m.programs.emplace(src,std::move(prog)).first;
+  it=m.programs.emplace(base+char('a'+need),std::move(prog)).first;
   m.msPerPixel=0;m.lastPixels=64; // new shader: re-measure cost
   // Warm-up draw (all loop counts are still 0): moves driver-side compilation out of the timed strips.
   glUseProgram(it->second.id);glBindVertexArray(m.vao);glBindFramebuffer(GL_FRAMEBUFFER,m.fbo[0]);
