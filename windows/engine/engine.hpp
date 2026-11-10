@@ -95,6 +95,12 @@ struct PointLight {
  float intensity=5,range=8;
 };
 struct Settings {
+ // Volumetric fog (Windows port). When on, `fog` is the extinction density and the old distance blend is replaced by
+ // ray-marched participating media lit by the sun and point lights with shadow rays (light shafts through the fractal).
+ bool volumetricFog=false;
+ float fogScatter=1,fogAnisotropy=.3f,fogAmbient=.15f;   // scatter strength, Henyey-Greenstein g in (-1,1), ambient in-scatter
+ int fogSteps=48,fogShadowSteps=24;                       // samples along the view ray; DE steps per shadow ray (0 = unshadowed)
+ Vec fogColor{.8f,.85f,1};
  bool separateLighting=false,adaptiveLighting=false,depthPrepass=false,adaptiveRayBudget=false,rayBudgetRetry=true;
  int lightingMinPasses=4,lightingRefresh=8,prepassBlock=8,rayMinSteps=16;
  float lightingThreshold=.03f,lightingDepthTolerance=.08f,prepassSafety=.5f;
@@ -137,6 +143,11 @@ struct Settings {
  float sunStrength=1,aperture=.03f,focusDistance=4;
  int dofSamples=4,lightingPasses=16,lightingBlock=4;
 };
+// Deterministic per-pixel jitter in [0,1) for fog sample placement; the GPU shader mirrors this integer hash exactly.
+inline float fogJitter(int px,int py,uint32_t pass){
+ uint32_t h=uint32_t(px)*73856093u^uint32_t(py)*19349663u^(pass*83492791u);
+ h^=h>>16;h*=0x7feb352du;h^=h>>15;h*=0x846ca68bu;h^=h>>16;return float(h>>8)*(1.f/16777216.f);
+}
 struct Camera {DVec position{0,0,-4};float yaw=0,pitch=0,speed=1;bool surfaceSpeed=true;float surfaceRange=1,minimumSpeed=.01f;};
 Camera presetCamera(int index);
 struct Scene {Formula formula=preset(0);Settings settings;Camera camera;};

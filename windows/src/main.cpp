@@ -607,15 +607,23 @@ int main(int argc,char** argv){
   uint64_t beforeRevision=renderer.imageRevision();
   if(useGpu){
    float eyeOffset=activeStereo?scene.settings.eyeSeparation*slider*.5f:0;
-   bool need=changed||eyeOffset!=gpuEye||moving||gpuMoving;
+   // Same adaptive-detail iteration count the CPU path uses (the GPU shader renders formula.iterations as given).
+   static int gpuIterations=-1;Scene* gpuScene=&scene;
+   if(scene.settings.adaptiveDetail){
+    if(!detailScene||changed)detailScene=std::make_unique<Scene>(scene);
+    detailScene->settings=scene.settings;detailScene->camera=scene.camera;
+    detailScene->formula.iterations=renderingIterations(scene,moving);gpuScene=detailScene.get();
+   }
+   bool need=changed||eyeOffset!=gpuEye||moving||gpuMoving||gpuScene->formula.iterations!=gpuIterations;
+   gpuIterations=gpuScene->formula.iterations;
    if(need){std::string error;
-    if(gpu.begin(scene,eyeOffset,error))gpuSeen=true;
+    if(gpu.begin(*gpuScene,eyeOffset,error))gpuSeen=true;
     else if(!gpuSeen){useGpu=false;forceCpu=true;status="GPU SHADER FAILED / CPU BACKEND";std::fprintf(stderr,"GPU shader: %s\n",error.c_str());applyBackend();renderer.invalidate(scene,false);}
     else status=error;
     gpuEye=eyeOffset;gpuDone=false;gpuMoving=moving;}
    if(useGpu&&!gpuDone&&!benchmarkActive){
     int rw=moving?std::max(1,W/motionDiv):W,rh=moving?std::max(1,H/motionDiv):H;
-    gpuDone=gpu.render(scene,rw,rh,moving?std::max(4.f,1000.f/scene.settings.targetFps*.8f):scene.settings.budgetMs*2);
+    gpuDone=gpu.render(*gpuScene,rw,rh,moving?std::max(4.f,1000.f/scene.settings.targetFps*.8f):scene.settings.budgetMs*2);
     shownW=rw;shownH=rh;
    }
   }
