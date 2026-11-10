@@ -109,7 +109,10 @@ struct Settings {
  int steps=64,previewBlock=8,interlace=4,ao=0,shadow=0,samples=1;
  float epsilon=.002f,safety=.65f,farClip=20,fov=55;
  // Auto refine: after the block refinement finishes, keep adding jittered full-resolution samples up to this many passes (1 = off).
- int refineSamples=16;
+ #ifndef RF_REFINE_DEFAULT
+ #define RF_REFINE_DEFAULT 16
+ #endif
+ int refineSamples=RF_REFINE_DEFAULT; // (tests build with -DRF_REFINE_DEFAULT=1 to compare against the single-pass engine)
  // Runtime precision state (not saved): precisionMode 0=AUTO 1=FLOAT 2=DOUBLE; deepDouble is the resolved choice for this frame.
  int precisionMode=0;bool deepDouble=false;
  float eyeSeparation=.065f,convergence=4,exposure=1,fog=.035f;

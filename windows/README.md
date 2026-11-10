@@ -93,6 +93,29 @@ are not available; scenes using features the GPU renderer does not implement ren
   inside the double path (their precision limits depth). The GPU backend is float only: while deep zoom needs double,
   the app renders on the CPU (`DEEP ZOOM: CPU DOUBLE`) and returns to the GPU automatically when it is no longer needed.
 
+## Volumetric fog with volumetric shadows
+
+COLOR tab rows after `FOG DENSITY`: `VOLUMETRIC FOG`, `FOG SCATTER`, `FOG ANISOTROPY` (Henyey-Greenstein g, -0.99..0.99),
+`FOG AMBIENT`, `FOG STEPS`, `FOG SHADOW STEPS` (0 = unshadowed), `FOG COLOR` (colour wheel). When on, `FOG DENSITY`
+is the extinction coefficient and the old `exp(-t*fog)` blend towards the sky colour is replaced by ray-marched
+participating media lit by the sun and the enabled point lights, with shadow rays against the fractal (light shafts).
+Secondary GI rays ignore fog. It works with DOF, refine passes (the sample jitter changes every pass, so the noise
+averages out) and the double-precision deep-zoom path. Fog needs a retrace: the instant recolour shortcut,
+separate-GI-resolution and adaptive empty-space skipping are bypassed while it is on. Cost: `FOG STEPS` x (1 + enabled
+point lights) shadow rays of `FOG SHADOW STEPS` DE evaluations per pixel (about 7 s vs 9 s for 400x240 x 4 passes with
+unshadowed fog in the CPU test, shadowed is several times more); while moving it uses `max(8, FOG STEPS/4)` steps and
+half the shadow steps. Saved in scene files as a trailing `FOG` line (`REFRACT 12`; older files load with fog off).
+
+Exact semantics (also written as a comment block above the fog code in `engine/renderer.cpp` for the GPU mirror):
+sigma = `FOG DENSITY`; T = surface distance (farClip for escaped rays); transmittance `exp(-sigma*T)`; march length
+`min(T, 16/sigma)`; N segments of ds = length/N, sample i at `(i + fogJitter(px,py,pass)) * ds`, stopping when
+`exp(-sigma*s) < 1e-4`; in-scatter `fogColor * (Incident + FOG AMBIENT) * (FOG SCATTER * sigma)`; `Incident` is the sum over
+the sun (radiance = sun strength, shadow reach 8) and each enabled point light (the surface falloff
+`intensity*(1-d/range)^2/(1+d^2)`, ignores the `POINT SHADOWS` flag) of `phase * radiance * visibility`; phase is
+Henyey-Greenstein times 4 pi (isotropic = 1) with cos = dot(ray direction, direction to the light), so g > 0 glows when
+looking towards the light; visibility is a SOFT shadow (sphere trace, `min(vis, 12*d/travel)`, 0 on a hit, running out of
+steps keeps the soft value); final colour `(surface*Ttot + sum Ts*ds*inscatter) * exposure`.
+
 ## Parameter limits
 
 **There are no artificial parameter limits.** Every number row accepts any finite value when typed (`Enter`),

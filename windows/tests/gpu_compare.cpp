@@ -56,6 +56,10 @@ static void extreme(Scene& s){auto& o=s.settings;o.quality=true;o.samples=32;o.s
  std::string e;s.formula.validate(e);s.formula.iterations=500;s.formula.bailout=1e9f;} // set after validate: app-side limits are being removed
 static void manyStages(Scene& s){Stage st;st.kind=Kind::Offset;st.a=st.b=st.c=0;
  for(int i=0;i<40;++i)s.formula.stages.push_back(st);std::string e;s.formula.validate(e);}
+static void fogSun(Scene& s){auto& o=s.settings;o.volumetricFog=true;o.fog=.3f;o.fogSteps=48;o.fogShadowSteps=0;o.fogScatter=1.2f;o.sunStrength=1.2f;}
+static void fogShafts(Scene& s){fogSun(s);s.settings.fogShadowSteps=32;s.settings.fogAnisotropy=.5f;}
+static void fogLamps(Scene& s){fogShafts(s);lamps(s);s.settings.sunStrength=.3f;s.settings.pointLights[0].intensity=30;s.settings.pointLights[1].intensity=20;}
+static void fogGi(Scene& s){fogShafts(s);gi4(s);s.settings.ao=3;}
 static void everything(Scene& s){gi4(s);lampsShadow(s);gradient5(s);s.settings.bloom=.4f;s.settings.ao=4;s.settings.emission=.1f;adaptive(s);}
 
 // Same algorithm as Renderer::applyBloom (private there), for the reference image.
@@ -103,7 +107,7 @@ int main(int argc,char** argv){
   // stochastic: depth of field, GI
   {"6 dof",6,dof},{"37 dof",37,dof},{"6 dof quality",6,dofQuality},{"6 gi4",6,gi4},{"6 gi12",6,gi12},{"36 gi12",36,gi12},
   {"38 gi+lamps",38,giLamps},{"37 gi+dof",37,giDof},{"6 progressive gi",6,progressive},
-  {"0 bloom",0,bloom},{"6 extreme limits",6,extreme},{"37 extreme gi dof",37,[](Scene& s){extreme(s);s.settings.samples=4;gi12(s);dof(s);s.settings.dofSamples=16;}},{"6 many stages",6,manyStages},{"36 everything",36,everything}};
+  {"0 bloom",0,bloom},{"6 fog sun unshadowed",6,fogSun},{"6 fog shafts",6,fogShafts},{"36 fog shafts",36,fogShafts},{"37 fog lamps",37,fogLamps},{"26 fog lamps repeat",26,fogLamps},{"0 fog sky",0,fogShafts},{"6 fog+gi+ao",6,fogGi},{"36 fog quality",36,[](Scene& s){fogShafts(s);quality(s);}},{"6 extreme limits",6,extreme},{"37 extreme gi dof",37,[](Scene& s){extreme(s);s.settings.samples=4;gi12(s);dof(s);s.settings.dofSamples=16;}},{"6 many stages",6,manyStages},{"36 everything",36,everything}};
  int ci=0;double worst=0;
  std::printf("%-26s %9s %9s %9s %8s %s\n","case","meanAbs","meanBias","big>60","gpu ms","note");
  for(const Case& c:cases){

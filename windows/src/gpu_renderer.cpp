@@ -155,6 +155,7 @@ std::string generateFragment(const Formula& f){
    "uniform int uSteps,uQuality,uCount,uPasses,uJitter,uAo,uShadow,uIter,uBlock,uLens,uVaried,uLinear,uAdaptive;\n"
    "uniform float uMinEps,uPixTol,uAperture,uFocus;\n"
    "uniform vec3 uSky;\n"
+   "uniform int uFogOn,uFogSteps,uFogShadow;uniform float uFogG,uFogAmbient,uFogScatter;uniform vec3 uFogColor;\n"
    "uniform int uGiSamples,uGiSteps;uniform float uGiStrength,uGiRange;\n"
    "uniform int uPointMask,uPointShadows;uniform vec3 uPointPos[2],uPointCol[2];uniform float uPointInt[2],uPointRange[2];\n"
    "uniform vec3 uGradLo,uGradHi,uGradMid[3];uniform float uGradScale,uGradOffset;uniform int uGradRepeat,uGradStops,uGradBounded;\n"
@@ -252,6 +253,16 @@ float hitTol(float t){ // rf::hitTolerance
  if(uAdaptive==0)return ceiling;
  return min(ceiling,max(uMinEps,2.0*t*uTangent/uRes.y*uPixTol));
 }
+float epsAt(vec3 p,float t){ // hit/step tolerance at p, floored by the float resolution
+ float e=uAdaptive!=0?hitTol(t):max(uEps,t*uEps*0.25);
+ if(uAdaptive!=0)e=max(e,4.0*1.1920929e-7*max(1.0,max(abs(p.x),max(abs(p.y),abs(p.z)))));
+ return e;
+}
+float fogJitter(uint px,uint py,uint pass){ // rf::fogJitter
+ uint h=px*73856093u^py*19349663u^(pass*83492791u);
+ h^=h>>16;h*=0x7feb352du;h^=h>>15;h*=0x846ca68bu;h^=h>>16;
+ return float(h>>8)*(1.0/16777216.0);
+}
 )";
  const std::string stepRepeat=f.repeat?"stride=min(stride,repeatBoundaryStep(q,DIR)+EPS*0.25);\n":"";
  auto withRepeat=[&](std::string text,const char* dir,const char* eps){
@@ -326,6 +337,47 @@ vec3 indirectLight(vec3 p,vec3 n,float e,float x,float y,uint seq){
  return incoming*(uGiStrength/float(uGiSamples));
 }
 )","direction","e");
+ // ---- volumetric fog (mirrors the VOLUMETRIC FOG SPEC in engine/renderer.cpp)
+ o+=withRepeat(R"(
+float fogPhase(float c){float g=uFogG,g2=g*g;return (1.0-g2)/pow(max(1e-6,1.0+g2-2.0*g*c),1.5);}
+float fogVis(vec3 P,vec3 L,float maxDist,float eps){
+ if(uFogShadow<=0)return 1.0;
+ float vis=1.0,travel=eps*2.0;
+ for(int k=0;k<uFogShadow&&travel<maxDist;++k){
+  vec3 q=P+L*travel;float sd,str;bool ok=de(q,sd,str);
+  if(!ok||sd<eps)return 0.0;
+  vis=min(vis,12.0*sd/travel);
+  float stride=max(sd*uSafety,eps);
+  @REPEAT@
+  travel+=stride;
+ }
+ return clamp(vis,0.0,1.0);
+}
+vec3 fogMarch(float T,vec3 origin,vec3 dir,float x,float y,uint seq,out float trans){
+ float sigma=uFog;trans=exp(-sigma*T);
+ float tm=min(T,16.0/sigma);
+ int n=max(1,uFogSteps);
+ float ds=tm/float(n),jitter=fogJitter(uint(x),uint(y),seq);
+ vec3 light=vec3(0.0);
+ for(int i=0;i<n;++i){
+  float sd=(float(i)+jitter)*ds,Ts=exp(-sigma*sd);
+  if(Ts<1e-4)break;
+  vec3 P=origin+dir*sd;float eps=epsAt(P,sd);vec3 incident=vec3(0.0);
+  if(uSun>0.0){float vis=fogVis(P,uLight,8.0,eps);if(vis>0.0)incident+=vec3(fogPhase(dot(dir,uLight))*uSun*vis);}
+  for(int k=0;k<2;++k){
+   if((uPointMask&(1<<k))==0)continue;
+   vec3 delta=uPointPos[k]-P;float len=length(delta);
+   if(len>=uPointRange[k]||len<=1e-9)continue;
+   vec3 L=delta*(1.0/len);float fall=1.0-len/uPointRange[k],power=uPointInt[k]*fall*fall/(1.0+len*len);
+   float vis=fogVis(P,L,len,eps);
+   if(vis>0.0)incident+=uPointCol[k]*(power*vis*fogPhase(dot(dir,L)));
+  }
+  vec3 scatter=uFogColor*(incident+vec3(uFogAmbient))*(uFogScatter*sigma);
+  light+=scatter*(Ts*ds);
+ }
+ return light;
+}
+)","L","eps");
  // ---- ray marcher
  o+=R"(
 // x,y: CPU pixel coordinates (y down). Returns linear radiance; mg flags the invalid-sample colour.
@@ -360,12 +412,13 @@ vec3 sampleRay(float x,float y,uint seq,out bool mg){
  if(f.repeat)o+="  advance=min(advance,repeatBoundaryStep(pt,dir)+eps*0.25);\n";
  o+=R"(  t+=advance;
  }
- if(!hit)return uSky*uExposure;
+ if(!hit){
+  if(uFogOn!=0){float tr;vec3 fl=fogMarch(uFar,origin,dir,x,y,seq,tr);return (uSky*tr+fl)*uExposure;}
+  return uSky*uExposure;
+ }
  vec3 p=origin+dir*t;
  de(p,d,trap);
- float e=uAdaptive!=0?hitTol(t):max(uEps,t*uEps*0.25);
- // At large coordinates, a sub-ULP normal offset would sample the same point.
- if(uAdaptive!=0)e=max(e,4.0*1.1920929e-7*max(1.0,max(abs(p.x),max(abs(p.y),abs(p.z)))));
+ float e=epsAt(p,t);
  vec3 n=tetraNormal(p,e);
  float diffuse=max(0.0,dot(n,uLight)),ao=1.0,shadow=1.0;
  float baseSpec=(uSpecular>0.0&&uSun>0.0)?pow(max(0.0,dot(n,unit(uLight-dir))),24.0)*uSpecular:0.0;
@@ -386,6 +439,7 @@ vec3 sampleRay(float x,float y,uint seq,out bool mg){
  vec3 color=albedo*(lighting+uEmission)+vec3(spec);
  if(uPointMask!=0)color+=albedo*localD+localS;
  if(uGiSamples>0&&uGiStrength>0.0)color+=albedo*indirectLight(p,n,e,x,y,seq);
+ if(uFogOn!=0){float tr;vec3 fl=fogMarch(t,origin,dir,x,y,seq,tr);return (color*tr+fl)*uExposure;}
  float fog=exp(-t*uFog);
  return (color*fog+uSky*(1.0-fog))*uExposure;
 }
@@ -478,7 +532,8 @@ void main(){
 bool lightingProgressive(const Settings& s){return s.progressiveLighting&&((s.giSamples>0&&s.giStrength>0)||(s.dof&&s.aperture>0));}
 // Auto refine: the finished CPU image is the mean of refineSamples jittered passes (R2 sub-pixel positions).
 bool refineActive(const Settings& s){return s.autoRefine&&!s.quality&&s.refineSamples>1&&!lightingProgressive(s);}
-bool separateActive(const Settings& s){return s.separateLighting&&!s.quality&&!(s.dof&&s.aperture>0)&&s.giSamples>0&&s.giStrength>0;}
+bool volumetricActive(const Settings& s){return s.volumetricFog&&s.fog>0&&std::isfinite(s.fog);}
+bool separateActive(const Settings& s){return !volumetricActive(s)&&s.separateLighting&&!s.quality&&!(s.dof&&s.aperture>0)&&s.giSamples>0&&s.giStrength>0;}
 // Cell size of the finished CPU image (the progressive refinement ends at this block).
 int finalBlock(const Settings& s){return s.quality?1:std::max(1,s.autoRefine?s.stillBlock:std::max(s.previewBlock,s.stillBlock));}
 }
@@ -639,6 +694,8 @@ void GpuRenderer::Impl::setUniforms(const Scene& scene,int rw,int rh){
  u1f("uFar",o.farClip);u1f("uEps",o.epsilon);u1f("uSafety",o.safety);u1f("uFog",o.fog);
  u1f("uExposure",o.exposure);u1f("uSpecular",o.specular);u1f("uSun",o.sunStrength);u1f("uEmission",o.emission);
  u1f("uRelax",(!o.quality&&!f.repeat&&o.relaxation>1)?o.relaxation:1.f);
+ u1i("uFogOn",volumetricActive(o)?1:0);u1i("uFogSteps",std::max(1,o.fogSteps));u1i("uFogShadow",std::max(0,o.fogShadowSteps));
+ u1f("uFogG",o.fogAnisotropy);u1f("uFogAmbient",o.fogAmbient);u1f("uFogScatter",o.fogScatter);u3f("uFogColor",o.fogColor);
  u1i("uQuality",o.quality?1:0);u1i("uSteps",int(std::min<long long>(INT_MAX,o.quality?(long long)o.steps*2:(long long)o.steps)));
  u1i("uAo",std::max(0,o.ao));u1i("uShadow",std::max(0,o.shadow));
  u1i("uAdaptive",o.adaptivePrecision?1:0);u1f("uMinEps",o.minEpsilon);u1f("uPixTol",o.pixelTolerance);
