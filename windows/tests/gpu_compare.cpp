@@ -18,7 +18,8 @@
 #include <vector>
 using namespace rf;
 
-struct Case {const char* name;int preset;void (*tweak)(Scene&);};
+struct Case {const char* name;int preset;void (*tweak)(Scene&);bool big=false;}; // big: 480x270 like the app
+static void appDefaults(Scene&){} // presetSettings() already carries the app defaults (adaptive precision/detail, 16 refine passes)
 static void none(Scene&){}
 static void repeatOn(Scene& s){s.formula.repeat=true;s.formula.repeatPeriod={6,6,6};s.camera.position={0,0,-2.5f};}
 static void quality(Scene& s){s.settings.quality=true;s.settings.samples=4;}
@@ -83,7 +84,7 @@ int main(int argc,char** argv){
  if(!gpu.init(err)||!gpu.resize(W,H)){std::printf("init: %s\n",err.c_str());return 1;}
  std::printf("renderer: %s\n",gpu.rendererName());
  Case cases[]={
-  {"0 bulb8",0,none},{"1 bulb2",1,none},{"5 julia bulb",5,none},{"6 mandelbox",6,none},{"7 neg box",7,none},
+  {"app 0 mandelbulb 480x270",0,appDefaults,true},{"app 36 kleinian 480x270",36,appDefaults,true},{"app 24 ruby 480x270",24,appDefaults,true},{"0 bulb8",0,none},{"1 bulb2",1,none},{"5 julia bulb",5,none},{"6 mandelbox",6,none},{"7 neg box",7,none},
   {"10 menger",10,none},{"11 twisted menger",11,none},{"12 tetra",12,none},{"13 kaleido tetra",13,none},{"14 box-bulb",14,none},
   {"16 expression",16,none},{"20 abs bulb",20,none},{"21 rot neg box",21,none},{"22 twisted julia",22,none},
   {"6 mandelbox quality",6,quality},{"0 bulb8 quality",0,quality},{"16 expr quality",16,quality},{"10 menger repeat",10,repeatOn},
@@ -108,8 +109,11 @@ int main(int argc,char** argv){
  for(const Case& c:cases){
   ++ci;
   if(*filter&&!std::strstr(c.name,filter))continue;
-  Scene s;s.formula=preset(c.preset);s.camera=presetCamera(c.preset);s.settings=presetSettings(c.preset);c.tweak(s);
+  const int rw=c.big?480:160,rh=c.big?270:96;
+  if(W!=rw||H!=rh){W=rw;H=rh;if(!gpu.resize(W,H)){std::printf("resize failed\n");return 1;}}
+  Scene s;s.formula=preset(c.preset);s.camera=presetCamera(c.preset);s.settings=presetSettings(c.preset);if(!c.big)s.settings.refineSamples=1;c.tweak(s);
   std::string e;s.formula.validate(e);
+  s.formula.iterations=renderingIterations(s,false); // the app renders with this iteration count (adaptive detail)
   std::string why;bool sup=GpuRenderer::supports(s,why);
   if(!sup){std::printf("%-26s unsupported: %s\n",c.name,why.c_str());continue;}
   if(!gpu.begin(s,0,err)){std::printf("%-26s begin failed: %s\n",c.name,err.c_str());continue;}
@@ -120,12 +124,15 @@ int main(int argc,char** argv){
   std::vector<Color> g;int gw,gh;gpu.readback(0,g,gw,gh);
   if(std::getenv("GPU_ONLY")){std::printf("%-26s gpu only: %.0f ms, %d render() calls\n",c.name,gms,guard+1);continue;} // stress runs: skip the slow CPU reference
   Rays rays(s);std::vector<Color> cpu(size_t(W)*H);
+  const Settings& st=s.settings;bool lightProg=st.progressiveLighting&&((st.giSamples>0&&st.giStrength>0)||(st.dof&&st.aperture>0));
+  bool refine=st.autoRefine&&!st.quality&&st.refineSamples>1&&!lightProg;
+  bool progressive=lightProg||refine;int passes=lightProg?std::max(1,st.lightingPasses):refine?st.refineSamples:1;
   unsigned nt=std::max(1u,std::thread::hardware_concurrency());std::vector<std::thread> pool;
   for(unsigned t=0;t<nt;++t)pool.emplace_back([&,t]{
    for(int y=int(t);y<H;y+=int(nt))for(int x=0;x<W;++x){RenderJob j;j.x=x;j.y=y;j.block=1;
-    j.accumulate=s.settings.progressiveLighting&&((s.settings.giSamples>0&&s.settings.giStrength>0)||(s.settings.dof&&s.settings.aperture>0));
+    j.accumulate=progressive;
     if(j.accumulate){ // progressive passes: average the per-pass radiance like Renderer::step()
-     Vec sum;int passes=std::max(1,s.settings.lightingPasses);
+     Vec sum;
      for(int p=0;p<passes;++p){j.sample=uint32_t(p);sum=sum+renderJob(s,rays,j).radiance;}
      sum=sum*(1.f/passes);cpu[size_t(y)*W+x]={uint8_t(clamp(sum.x,0,1)*255),uint8_t(clamp(sum.y,0,1)*255),uint8_t(clamp(sum.z,0,1)*255)};
     }else{

@@ -64,7 +64,7 @@ bool writePPM(const std::vector<Color>& image,int w,int h,const std::string& pat
  out<<"P6\n"<<w<<' '<<h<<"\n255\n";out.write(reinterpret_cast<const char*>(image.data()),std::streamsize(image.size()*3));
  out.close();if(!out){error="Image write failed";return false;}error="IMAGE SAVED";return true;
 }
-struct Args {int tab=0,select=0,stereo=0;std::string windowShot;int frames=0,move=0,preset=-1,width=0,height=0,wheel=0;std::vector<double> dive;std::string divePrefix;bool selftest=false,cpu=false,gpu=false;std::string screenshot,panel;};
+struct Args {int tab=0,select=0,stereo=0;std::string windowShot;int frames=0,move=0,preset=-1,width=0,height=0,wheel=0;std::vector<double> dive;std::string divePrefix,scenePath;bool selftest=false,cpu=false,gpu=false;std::string screenshot,panel;};
 Args parseArgs(int argc,char** argv){
  Args a;
  for(int i=1;i<argc;++i){std::string s=argv[i];auto next=[&]()->const char*{return i+1<argc?argv[++i]:"";};
@@ -78,6 +78,7 @@ Args parseArgs(int argc,char** argv){
   else if(s=="--wheel")a.wheel=std::atoi(next());
   else if(s=="--dive"){std::string list=next();size_t pos=0;while(pos<list.size()){size_t end=list.find(',',pos);if(end==std::string::npos)end=list.size();a.dive.push_back(std::atof(list.substr(pos,end-pos).c_str()));pos=end+1;}}
   else if(s=="--dive-prefix")a.divePrefix=next();
+  else if(s=="--scene")a.scenePath=next();
   else if(s=="--window-shot")a.windowShot=next();
   else if(s=="--stereo"){std::string m=next();a.stereo=m=="sbs"?1:m=="ana"?2:0;}
   else if(s=="--move")a.move=std::atoi(next());
@@ -141,6 +142,7 @@ int main(int argc,char** argv){
   if(args.gpu&&!wantGpu){std::fprintf(stderr,"GPU backend requested but unavailable\n");}
   if(args.width>0&&args.height>0){customW=std::max(1,args.width);customH=std::max(1,args.height);resIndex=CustomResolution;}
   if(args.preset>=0&&args.preset<PresetCount)loadPreset(args.preset);
+  if(!args.scenePath.empty()){std::string e;if(loadScene(scene,args.scenePath,e)){presetIndex=-1;}else std::fprintf(stderr,"--scene: %s\n",e.c_str());}
  }
  // Resolve the active render size (clamped to the GL texture limit and a memory budget for the active backend).
  int matchW=0,matchH=0;double matchSince=0;std::string sizeNote;
@@ -378,6 +380,7 @@ int main(int argc,char** argv){
     for(const char* p:nonnegative)if(label==p)lo=0;
     if(label=="FIELD OF VIEW"){lo=.01f;hi=179.99f;}
     else if(label=="POWER")lo=1.0001f;
+    else if(label=="FOG ANISOTROPY"){lo=-.9999f;hi=.9999f;}
     else if(label=="PREPASS START FRACTION"){lo=0;hi=.999f;}
     else if(label=="RELAXATION EXP")lo=1;
     else if(label=="POINT RANGE")lo=Tiny;
@@ -511,7 +514,7 @@ int main(int argc,char** argv){
    integer("LIGHTING PASSES",v.lightingPasses,1,1,4096);blocks("LIGHTING BLOCK",v.lightingBlock);
    integer("INDIRECT SAMPLES",v.giSamples,1,0,64);integer("INDIRECT STEPS",v.giSteps,4,4,4096);
    real("INDIRECT STRENGTH",v.giStrength,.1f,0,20);real("INDIRECT RANGE",v.giRange,.1f,.1f,10000);colorField("SKY COLOR",v.skyColor);
-   real("SPECULAR",v.specular,.05f,0,1);real("FOG DENSITY",v.fog,.01f,0,1);
+   real("SPECULAR",v.specular,.05f,0,1);real("FOG DENSITY",v.fog,.01f,0,1);boolean("VOLUMETRIC FOG",v.volumetricFog);real("FOG SCATTER",v.fogScatter,.1f,0,1);real("FOG ANISOTROPY",v.fogAnisotropy,.05f,-.99f,.99f);real("FOG AMBIENT",v.fogAmbient,.05f,0,1);integer("FOG STEPS",v.fogSteps,4,1,1);integer("FOG SHADOW STEPS",v.fogShadowSteps,4,0,1);colorField("FOG COLOR",v.fogColor);
    realD("CAMERA X",scene.camera.position.x,.1f);realD("CAMERA Y",scene.camera.position.y,.1f);realD("CAMERA Z",scene.camera.position.z,.1f);
    real("CAMERA YAW",scene.camera.yaw,.1f,-6.3f,6.3f);real("CAMERA PITCH",scene.camera.pitch,.1f,-1.5f,1.5f);
   }else{

@@ -36,7 +36,8 @@ bool lightingProgressive(const Settings& s){return s.progressiveLighting&&((s.gi
 // Auto refine: after the block refinement, keep adding jittered full-resolution passes (supersampling) while the camera is still.
 bool refineActive(const Settings& s){return s.autoRefine&&!s.quality&&s.refineSamples>1&&!lightingProgressive(s);}
 int lightingTarget(const Settings& s){return s.quality?1:lightingProgressive(s)?std::max(s.stillBlock,s.lightingBlock):s.stillBlock;}
-bool separateActive(const Settings& s){return s.separateLighting&&!s.quality&&!(s.dof&&s.aperture>0)&&s.giSamples>0&&s.giStrength>0;}
+bool volumetricActive(const Settings& s){return s.volumetricFog&&s.fog>0&&std::isfinite(s.fog);}
+bool separateActive(const Settings& s){return !volumetricActive(s)&&s.separateLighting&&!s.quality&&!(s.dof&&s.aperture>0)&&s.giSamples>0&&s.giStrength>0;}
 bool progressiveActive(const Settings& s){return lightingProgressive(s)||refineActive(s);}
 int passesOf(const Settings& s){return lightingProgressive(s)?s.lightingPasses:refineActive(s)?s.refineSamples:1;}
 }
@@ -63,7 +64,7 @@ Color recolorSample(const Settings& o,const ShadeRecord& r){
  color=color+albedo.multiply(r.localDiffuse)+r.localSpecular;
  return quantize((color*fog+background*(1-fog))*o.exposure);
 }
-static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,float eye,bool fast,uint32_t sequence=0,bool varied=false,bool lens=false,bool indirect=true,float startDepth=0,bool skyLikely=false,const ShadeRecord* surface=nullptr){
+static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,float eye,bool fast,uint32_t sequence=0,bool varied=false,bool lens=false,bool indirect=true,float startDepth=0,bool skyLikely=false,const ShadeRecord* surface=nullptr,bool moving=false){
  RenderResult result;result.profile.rays=surface?0:1;if(surface)++result.profile.reused;
  // Per-ray counts fit in 32 bits; publish 64-bit totals once, avoiding paired
  // loads/stores on ARM11 for every distance-estimator call.
@@ -84,6 +85,72 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  }else rays.ray(s,x,y,eye,origin,dir);
  float t=surface?surface->depth:startDepth,trap=surface?surface->trap:0;bool hit=surface&&!surface->background;const Settings& o=s.settings;
  float previousT=0,previousD=0,advance=0;bool relaxed=false;
+ // Hit/step tolerance at point p (distance t from the camera): pixel footprint when zoom precision is on, floored by the number format.
+ auto epsAt=[&](Vec p,float t){
+  float e=o.adaptivePrecision?hitTolerance(o,t,rays.tangent):std::fmax(o.epsilon,t*o.epsilon*.25f);
+  // At large coordinates, a sub-ULP normal offset would sample the same point.
+  if(o.adaptivePrecision){if(deep)e=std::fmax(e,float(4*2.2204460e-16*std::fmax(1.,std::fmax(std::fabs(rays.anchor.x+p.x),std::fmax(std::fabs(rays.anchor.y+p.y),std::fabs(rays.anchor.z+p.z))))));
+   else e=std::fmax(e,4*1.1920929e-7f*std::fmax(1.f,std::fmax(std::fabs(p.x),std::fmax(std::fabs(p.y),std::fabs(p.z)))));}
+  return e;
+ };
+ // ===================================================================================================================
+ // VOLUMETRIC FOG SPEC (the GPU shader mirrors this exactly).  Active when settings.volumetricFog && fog>0; it REPLACES
+ // the exp(-t*fog) blend. Secondary (GI) rays ignore fog. Everything below is evaluated per primary ray (incl. DOF rays).
+ //  sigma = settings.fog (extinction). T = surface distance (hit t) or farClip for rays that escaped / ran out of steps.
+ //  Total transmittance Ttot = exp(-sigma*T). March length Tm = min(T, 16/sigma) (beyond that exp(-16) is negligible).
+ //  N = fogSteps (>=1) for final/still frames, max(8,fogSteps/4) while moving; shadow steps S = fogShadowSteps, or
+ //  fogShadowSteps/2 (integer division) while moving. ds = Tm/N. Sample i at s=(i+j)*ds with
+ //  j=fogJitter(int(x),int(y),sequence): int(x),int(y) = integer pixel coordinates of the ray (truncated float pixel position,
+ //  after sub-pixel jitter), sequence = accumulation/refine pass index (j.sample*count+sampleIndex). Stop when exp(-sigma*s)<1e-4.
+ //  P = rayOrigin + rayDir*s. Ts = exp(-sigma*s).
+ //  Phase: HG scaled by 4*pi so that isotropic == 1:  ph(c)=(1-g^2)/(1+g^2-2*g*c)^1.5, g=fogAnisotropy, c=dot(rayDir,Ldir),
+ //  Ldir = unit vector from P TOWARDS the light (g>0: bright when looking towards the light).
+ //  Incident(P) = sum over lights of ph(dot(rayDir,Ldir)) * radiance * vis(P,light), where
+ //     sun   : Ldir=rays.light, radiance = sunStrength (white), vis tested over max distance 8 (no range falloff);
+ //     point : for each enabled lamp (rays.pointMask) with intensity>0: delta=lampPos-P, len=|delta|, skipped if len>=range;
+ //             radiance = lamp.color*lamp.intensity*(1-len/range)^2/(1+len^2) (same as surface point lights), vis tested over len.
+ //            (lamp shadowing in fog uses fogShadowSteps and ignores the pointShadows flag).
+ //  vis = SOFT shadow, sphere-traced against the fractal DE: if S==0 -> 1. Else start travel=2*eps (eps=epsAt(P,s)),
+ //  vis=1; for k<S while travel<maxDist: d=DE(P+Ldir*travel); if(!d.valid||d.distance<eps) return 0;
+ //  vis=min(vis,12*d.distance/travel); travel+=max(d.distance*safety,eps) (min with repeat boundary step when repeat is on).
+ //  Running out of steps without a hit leaves the soft value (it does NOT turn black). Result clamped to [0,1].
+ //  inscatter(P) = fogColor * (Incident(P) + fogAmbient) * (fogScatter*sigma)      (ambient is unshadowed, no phase)
+ //  L = sum_i Ts*ds*inscatter(P_i).   final linear colour = (surfaceColour*Ttot + L) * exposure,
+ //  where surfaceColour is the lit surface (or skyColor for escaped rays).
+ // ===================================================================================================================
+ const bool volumetric=volumetricActive(o);
+ struct FogResult {float transmittance=1;Vec light{};};
+ auto fogMarch=[&](float T)->FogResult{
+  FogResult r;const float sigma=o.fog;r.transmittance=std::exp(-sigma*T);
+  const float tm=std::fmin(T,16.f/sigma);
+  const int n=std::max(1,moving?std::max(8,o.fogSteps/4):o.fogSteps),shadowSteps=moving?o.fogShadowSteps/2:o.fogShadowSteps;
+  const float ds=tm/n,jitter=fogJitter(int(x),int(y),sequence),g=o.fogAnisotropy,g2=g*g;
+  auto phase=[&](float c){return (1-g2)/std::pow(std::fmax(1e-6f,1+g2-2*g*c),1.5f);};
+  auto visibility=[&](Vec P,Vec L,float maxDist,float eps){
+   if(shadowSteps<=0)return 1.f;
+   float vis=1,travel=eps*2;
+   for(int k=0;k<shadowSteps&&travel<maxDist;++k){Vec q=P+L*travel;Sample d=query(q,true);
+    if(!d.valid||d.distance<eps)return 0.f;
+    vis=std::fmin(vis,12*d.distance/travel);
+    float stride=std::fmax(d.distance*o.safety,eps);
+    if(s.formula.repeat)stride=std::fmin(stride,boundary(q,L)+eps*.25f);
+    travel+=stride;}
+   return clamp(vis,0,1);
+  };
+  for(int i=0;i<n;++i){
+   float sd=(i+jitter)*ds,Ts=std::exp(-sigma*sd);if(Ts<1e-4f)break;
+   Vec P=origin+dir*sd;float eps=epsAt(P,sd);Vec incident{};
+   if(o.sunStrength>0){float vis=visibility(P,rays.light,8.f,eps);if(vis>0){float w=phase(dir.dot(rays.light))*o.sunStrength*vis;incident=incident+Vec{w,w,w};}}
+   for(int k=0;k<2;++k){if(!(rays.pointMask&(1<<k)))continue;const auto& lamp=o.pointLights[k];
+    Vec delta=rays.pointPositions[k]-P;float len=delta.length();if(len>=lamp.range||len<=1e-9f)continue;
+    Vec L=delta*(1/len);float fall=1-len/lamp.range,power=lamp.intensity*fall*fall/(1+len*len);
+    float vis=visibility(P,L,len,eps);if(vis>0)incident=incident+lamp.color*(power*vis*phase(dir.dot(L)));}
+   Vec scatter=o.fogColor.multiply(incident+Vec{o.fogAmbient,o.fogAmbient,o.fogAmbient})*(o.fogScatter*sigma);
+   r.light=r.light+scatter*(Ts*ds);
+  }
+  return r;
+ };
+
  int steps=o.quality?(o.steps>1073741823?o.steps:o.steps*2):o.steps;
  int budget=o.adaptiveRayBudget&&!o.quality&&skyLikely?std::min(steps,o.rayMinSteps):steps;
  for(int i=0;!surface&&i<steps&&t<o.farClip;++i){
@@ -102,14 +169,15 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  if(!surface&&startDepth>0&&!hit){auto retry=sampleRay(s,rays,x,y,eye,fast,sequence,varied,lens,indirect,0,skyLikely,nullptr);retry.profile.steps+=stepsTaken;retry.profile.distanceQueries+=queries;retry.profile.reused+=result.profile.reused;retry.profile.budgetRetries+=result.profile.budgetRetries;retry.profile.relaxFallbacks+=result.profile.relaxFallbacks;++retry.profile.depthStarts;return retry;}
  if(startDepth>0)++result.profile.depthStarts;
  Vec background=o.skyColor;
- if(!hit){result.shade.valid=true;result.shade.background=true;result.shade.escaped=t>=o.farClip;return finishLinear(background*o.exposure);}
+ if(!hit){result.shade.valid=true;result.shade.background=true;result.shade.escaped=t>=o.farClip;
+  if(volumetric){FogResult f=fogMarch(o.farClip);return finishLinear((background*f.transmittance+f.light)*o.exposure);}
+  return finishLinear(background*o.exposure);}
  Vec p=origin+dir*t;result.hit=true;result.point=p;result.depth=t;
  if(!surface){++queries;++shadingQueries;trap=distT(p,o.quality).trap;}
- if(fast){result.shade={trap,t,1,0,true};float fog=std::exp(-t*o.fog);return finishLinear((gradientColor(o,trap)*((1+o.emission)*fog)+background*(1-fog))*o.exposure);}
- float e=o.adaptivePrecision?hitTolerance(o,t,rays.tangent):std::fmax(o.epsilon,t*o.epsilon*.25f);
- // At large coordinates, a sub-ULP normal offset would sample the same point.
- if(o.adaptivePrecision){if(deep)e=std::fmax(e,float(4*2.2204460e-16*std::fmax(1.,std::fmax(std::fabs(rays.anchor.x+p.x),std::fmax(std::fabs(rays.anchor.y+p.y),std::fabs(rays.anchor.z+p.z))))));
-  else e=std::fmax(e,4*1.1920929e-7f*std::fmax(1.f,std::fmax(std::fabs(p.x),std::fmax(std::fabs(p.y),std::fabs(p.z)))));}
+ if(fast){result.shade={trap,t,1,0,true};
+  if(volumetric){FogResult f=fogMarch(t);return finishLinear((gradientColor(o,trap)*(1+o.emission)*f.transmittance+f.light)*o.exposure);}
+  float fog=std::exp(-t*o.fog);return finishLinear((gradientColor(o,trap)*((1+o.emission)*fog)+background*(1-fog))*o.exposure);}
+ float e=epsAt(p,t);
  // Tetrahedral normal: four DE evaluations instead of six central differences.
  Vec v1{1,-1,-1},v2{-1,-1,1},v3{-1,1,-1},v4{1,1,1};
  Vec n=surface?surface->normal:(v1*query(p+v1*e,true).distance+v2*query(p+v2*e,true).distance+
@@ -190,7 +258,8 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  Vec color=albedo*(result.shade.lighting+o.emission)+Vec{spec,spec,spec};
  if(rays.pointMask)color=color+albedo.multiply(result.shade.localDiffuse)+result.shade.localSpecular;
  if(o.giSamples>0&&o.giStrength>0)color=color+albedo.multiply(result.shade.indirect);
- float fog=std::exp(-t*o.fog);color=(color*fog+background*(1-fog))*o.exposure;
+ if(volumetric){FogResult f=fogMarch(t);color=(color*f.transmittance+f.light)*o.exposure;}
+ else{float fog=std::exp(-t*o.fog);color=(color*fog+background*(1-fog))*o.exposure;}
  return finishLinear(color);
 }
 bool StereoSlider::update(const Settings& s,float raw){
@@ -255,7 +324,7 @@ RenderResult renderJob(const Scene& s,const Rays& rays,const RenderJob& j){
   if(j.accumulate&&!j.surface&&count==1)samplePattern(int(j.sample),1<<30,jx,jy);
   // Lens samples repeat the same pixel pattern (see samplePattern) while varying the aperture.
   auto r=sampleRay(s,rays,std::min(W-.5f,j.x+j.block*jx),std::min(H-.5f,j.y+j.block*jy),j.offset,j.fast&&!s.settings.quality,
-   j.sample*uint32_t(count)+i,j.accumulate||lens||j.surface,lens,!coarseLighting,j.startDepth,j.skyLikely,j.surface);
+   j.sample*uint32_t(count)+i,j.accumulate||lens||j.surface,lens,!coarseLighting,j.startDepth,j.skyLikely,j.surface,j.moving);
   if(i==0){result.shade=r.shade;result.point=r.point;result.depth=r.depth;result.hit=r.hit;}
   result.profile.add(r.profile);red+=r.color.r;green+=r.color.g;blue+=r.color.b;radiance=radiance+r.radiance;
  }
@@ -324,7 +393,7 @@ void Renderer::beginFrame(const Scene& s,bool motion,bool changed,float slider){
  if(motion&&s.settings.temporal&&!s.settings.quality)reproject(s,Rays(s),slider);
 }
 bool Renderer::recolor(const Scene& s){
- if(!cacheReady||!done||moving||s.settings.bloom>0||s.settings.giSamples>0||(s.settings.dof&&s.settings.aperture>0)||progressiveActive(s.settings))return false;
+ if(!cacheReady||!done||moving||volumetricActive(s.settings)||s.settings.bloom>0||s.settings.giSamples>0||(s.settings.dof&&s.settings.aperture>0)||progressiveActive(s.settings))return false;
  // The final pass shades one ray per block; avoid repeating exp/gradient math
  // for every replicated pixel in a completed coarse render.
  struct Work{Renderer* renderer;const Scene* scene;int rows;};Work work{this,&s,(H+block-1)/block};
@@ -359,7 +428,7 @@ void Renderer::endFrame(const Scene& s,float totalMs,float renderMs,uint64_t job
  else if(estimate*4<target*1.4f)dynamicBlock=std::max(2,dynamicBlock/2);}
 }
 bool Renderer::skipCell(const Scene& s,int x,int y,int eye,int cell){
- if(!moving&&!s.settings.quality&&s.settings.adaptiveEmpty&&emptyBlock>0&&(s.settings.emptyRefresh==0||emptyPass%s.settings.emptyRefresh!=0)){
+ if(!moving&&!s.settings.quality&&!volumetricActive(s.settings)&&s.settings.adaptiveEmpty&&emptyBlock>0&&(s.settings.emptyRefresh==0||emptyPass%s.settings.emptyRefresh!=0)){
   int mx=std::min(emptyColumns-1,x/emptyBlock),my=std::min(emptyRows-1,y/emptyBlock);
   unsigned hash=unsigned(x/block)*13u+unsigned(y/block)*7u+unsigned(eye)*3u+unsigned(lightingPass)*5u;
   unsigned mask=emptyMask[eye][my*emptyColumns+mx],frequency=mask==2?unsigned(s.settings.skyEdgeProbe):unsigned(s.settings.emptyProbe);

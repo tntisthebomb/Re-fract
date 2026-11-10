@@ -152,7 +152,7 @@ std::string generateFragment(const Formula& f){
  // ---- uniforms
  o+="uniform vec2 uRes;uniform vec3 uOrigin,uForward,uRight,uUp,uLight;\n"
    "uniform float uTangent,uConv,uEye,uFar,uEps,uSafety,uFog,uExposure,uSpecular,uSun,uEmission,uRelax;\n"
-   "uniform int uSteps,uQuality,uCount,uPasses,uAo,uShadow,uIter,uBlock,uLens,uVaried,uLinear,uAdaptive;\n"
+   "uniform int uSteps,uQuality,uCount,uPasses,uJitter,uAo,uShadow,uIter,uBlock,uLens,uVaried,uLinear,uAdaptive;\n"
    "uniform float uMinEps,uPixTol,uAperture,uFocus;\n"
    "uniform vec3 uSky;\n"
    "uniform int uGiSamples,uGiSteps;uniform float uGiStrength,uGiRange;\n"
@@ -399,6 +399,7 @@ void main(){
  for(int ps=0;ps<uPasses;++ps){
   for(int i=0;i<uCount;++i){
    float jx,jy;pattern(i,uCount,jx,jy);
+   if(uJitter!=0&&uCount==1)pattern(ps,1073741824,jx,jy); // progressive pass jitter, as renderJob()
    bool mg;
    vec3 rad=sampleRay(min(uRes.x-0.5,xl+B*jx),min(uRes.y-0.5,rowTop+B*jy),uint(ps*uCount+i),mg);
    if(mg){intSum+=ivec3(180,20,90);radSum+=vec3(180.0,20.0,90.0)*(1.0/255.0);}
@@ -474,7 +475,9 @@ void main(){
  }
 }
 )";
-bool progressiveActive(const Settings& s){return s.progressiveLighting&&((s.giSamples>0&&s.giStrength>0)||(s.dof&&s.aperture>0));}
+bool lightingProgressive(const Settings& s){return s.progressiveLighting&&((s.giSamples>0&&s.giStrength>0)||(s.dof&&s.aperture>0));}
+// Auto refine: the finished CPU image is the mean of refineSamples jittered passes (R2 sub-pixel positions).
+bool refineActive(const Settings& s){return s.autoRefine&&!s.quality&&s.refineSamples>1&&!lightingProgressive(s);}
 bool separateActive(const Settings& s){return s.separateLighting&&!s.quality&&!(s.dof&&s.aperture>0)&&s.giSamples>0&&s.giStrength>0;}
 // Cell size of the finished CPU image (the progressive refinement ends at this block).
 int finalBlock(const Settings& s){return s.quality?1:std::max(1,s.autoRefine?s.stillBlock:std::max(s.previewBlock,s.stillBlock));}
@@ -555,6 +558,7 @@ bool GpuRenderer::supports(const Scene& scene,std::string& reason){
   if(comps>0&&(6*f.activeCount+48)*4>comps)return no("stage count exceeds the GPU uniform limit");
  }
  if(exprCode>1200)return no("expression stages too large for the shader generator");
+ if(o.deepDouble)return no("deep zoom needs the double-precision CPU path");
  if(o.upscale!=0&&finalBlock(o)>1)return no("upscale filter on a coarse final render");
  reason.clear();return true;
 }
@@ -640,13 +644,13 @@ void GpuRenderer::Impl::setUniforms(const Scene& scene,int rw,int rh){
  u1i("uAdaptive",o.adaptivePrecision?1:0);u1f("uMinEps",o.minEpsilon);u1f("uPixTol",o.pixelTolerance);
  u3f("uSky",o.skyColor);
  // Sampling plan, mirroring renderJob() for a finished image.
- bool lens=o.dof&&o.aperture>0,prog=progressiveActive(o),split=separateActive(o);
+ bool lens=o.dof&&o.aperture>0,prog=lightingProgressive(o),refine=refineActive(o),split=separateActive(o);
  int count=o.quality?std::max(1,o.samples):1;
  if(lens)count=std::max(count,std::max(1,o.dofSamples));
- bool accumulate=prog&&!split;
+ bool accumulate=(prog||refine)&&!split;
  u1i("uCount",count);u1i("uLens",lens?1:0);u1f("uAperture",o.aperture);u1f("uFocus",o.focusDistance);
  u1i("uVaried",(lens||accumulate||split)?1:0);u1i("uLinear",(lens||accumulate)?1:0);
- u1i("uPasses",(accumulate||split)&&prog?std::max(1,o.lightingPasses):1);
+ u1i("uPasses",prog?std::max(1,o.lightingPasses):refine?std::max(1,o.refineSamples):1);u1i("uJitter",accumulate?1:0);
  u1i("uBlock",finalBlock(o));
  u1i("uGiSamples",std::max(0,o.giSamples));u1i("uGiSteps",std::max(0,o.giSteps));
  u1f("uGiStrength",o.giStrength);u1f("uGiRange",o.giRange);
