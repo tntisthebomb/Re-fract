@@ -6,27 +6,31 @@
 namespace rf {
 namespace {
 bool settingsValid(const Scene& s){
+ // No artificial parameter limits: values only have to be finite and satisfy what the math needs (positive divisors,
+ // valid enums, integer counts >= their minimum). Block sizes are capped at 2^20 only to keep index arithmetic in int range.
  const Settings& v=s.settings;
- auto range=[](float x,float lo,float hi){return std::isfinite(x)&&x>=lo&&x<=hi;};
- if(v.lightingMinPasses<2||v.lightingMinPasses>4096||v.lightingRefresh<0||v.lightingRefresh>256||v.rayMinSteps<4||v.rayMinSteps>4096||(v.prepassBlock!=4&&v.prepassBlock!=8&&v.prepassBlock!=16&&v.prepassBlock!=32)||!range(v.lightingThreshold,.0001f,1)||!range(v.lightingDepthTolerance,.001f,1)||!range(v.prepassSafety,0,.9f))return false;
- if(v.skyEdgeProbe<1||v.skyEdgeProbe>64||v.skyNeighbors<1||v.skyNeighbors>9||v.emptyRefresh<0||v.emptyRefresh>256||v.emptyProbe<1||v.emptyProbe>64||(v.stillBlock!=1&&v.stillBlock!=2&&v.stillBlock!=4&&v.stillBlock!=8&&v.stillBlock!=16)||v.upscale<0||v.upscale>2||(v.lightingBlock!=1&&v.lightingBlock!=2&&v.lightingBlock!=4&&v.lightingBlock!=8&&v.lightingBlock!=16)||!range(v.emission,0,100)||!range(v.bloom,0,100)||v.gradientStops<2||v.gradientStops>5)return false;
- for(Vec color:v.gradientMiddle)if(!range(color.x,0,1)||!range(color.y,0,1)||!range(color.z,0,1))return false;
- for(const auto& lamp:v.pointLights)if(!range(lamp.position.x,-1e6f,1e6f)||!range(lamp.position.y,-1e6f,1e6f)||!range(lamp.position.z,-1e6f,1e6f)||
-  !range(lamp.color.x,0,1)||!range(lamp.color.y,0,1)||!range(lamp.color.z,0,1)||!range(lamp.intensity,0,10000)||!range(lamp.range,.0001f,10000))return false;
- return range(v.sunStrength,0,100)&&range(v.aperture,0,100)&&range(v.focusDistance,.0001f,10000)&&v.lightingPasses>=1&&v.lightingPasses<=4096&&
- (v.dofSamples==1||v.dofSamples==2||v.dofSamples==4||v.dofSamples==8||v.dofSamples==16||v.dofSamples==32||v.dofSamples==64)&&range(v.fieldSpacing,.05f,1)&&v.previewIterations>=1&&v.previewIterations<=256&&v.detailIterations>=1&&v.detailIterations<=256&&v.giSamples>=0&&v.giSamples<=64&&v.giSteps>=4&&v.giSteps<=4096&&range(v.giStrength,0,20)&&range(v.giRange,.0001f,10000)&&
- range(v.minEpsilon,1e-9f,1)&&range(v.pixelTolerance,.05f,2)&&
- range(v.skyColor.x,0,1)&&range(v.skyColor.y,0,1)&&range(v.skyColor.z,0,1)&&v.steps>=8&&v.steps<=4096&&(v.previewBlock==2||v.previewBlock==4||v.previewBlock==8||v.previewBlock==16)&&v.interlace>=1&&v.interlace<=8&&
- v.ao>=0&&v.ao<=64&&v.shadow>=0&&v.shadow<=4096&&(v.samples==1||v.samples==2||v.samples==4||v.samples==8||v.samples==16)&&
- range(v.epsilon,1e-9f,1)&&range(v.safety,.001f,4)&&range(v.farClip,.01f,100000)&&range(v.fov,1,175)&&
- range(v.eyeSeparation,0,2)&&range(v.convergence,.0001f,10000)&&range(v.exposure,0,100)&&range(v.fog,0,100)&&
- range(v.lightYaw,-6.3f,6.3f)&&range(v.lightPitch,-1.5f,1.5f)&&range(v.palette,0,3)&&range(v.specular,0,20)&&range(v.budgetMs,1,100)&&
- range(s.camera.position.x,-1e6f,1e6f)&&range(s.camera.position.y,-1e6f,1e6f)&&range(s.camera.position.z,-1e6f,1e6f)&&
- v.batchSize>=1&&v.batchSize<=32&&v.targetFps>=5&&v.targetFps<=240&&v.historyFrames>=1&&v.historyFrames<=30&&v.refreshRate>=1&&v.refreshRate<=8&&
- range(v.relaxation,1,1.5f)&&range(v.gradientScale,-10000,10000)&&range(v.gradientOffset,-10000,10000)&&
- (v.meshStride==4||v.meshStride==8||v.meshStride==16)&&range(v.meshEdge,.005f,.5f)&&range(v.meshNear,.0001f,.5f)&&
- range(v.gradientLow.x,0,1)&&range(v.gradientLow.y,0,1)&&range(v.gradientLow.z,0,1)&&range(v.gradientHigh.x,0,1)&&range(v.gradientHigh.y,0,1)&&range(v.gradientHigh.z,0,1)&&
- range(s.camera.surfaceRange,.001f,20)&&range(s.camera.minimumSpeed,.0001f,1)&&range(s.camera.yaw,-6.3f,6.3f)&&range(s.camera.pitch,-1.5f,1.5f)&&range(s.camera.speed,.00001f,1000);
+ auto fin=[](float x){return std::isfinite(x);};
+ auto pos=[](float x){return std::isfinite(x)&&x>0;};
+ auto nonneg=[](float x){return std::isfinite(x)&&x>=0;};
+ auto unit=[](float x){return std::isfinite(x)&&x>=0&&x<=1;};
+ auto block=[](int b){return b>=1&&b<=(1<<20);};
+ auto color=[&](Vec c){return unit(c.x)&&unit(c.y)&&unit(c.z);};
+ if(v.lightingMinPasses<1||v.lightingRefresh<0||v.rayMinSteps<1||!block(v.prepassBlock)||!pos(v.lightingThreshold)||!pos(v.lightingDepthTolerance)||!fin(v.prepassSafety)||v.prepassSafety<0||v.prepassSafety>=1)return false;
+ if(v.skyEdgeProbe<1||v.skyNeighbors<1||v.emptyRefresh<0||v.emptyProbe<1||!block(v.stillBlock)||v.upscale<0||v.upscale>2||!block(v.lightingBlock)||!nonneg(v.emission)||!nonneg(v.bloom)||v.gradientStops<2||v.gradientStops>5)return false;
+ for(Vec c:v.gradientMiddle)if(!color(c))return false;
+ for(const auto& lamp:v.pointLights)if(!fin(lamp.position.x)||!fin(lamp.position.y)||!fin(lamp.position.z)||!color(lamp.color)||!nonneg(lamp.intensity)||!pos(lamp.range))return false;
+ return nonneg(v.sunStrength)&&nonneg(v.aperture)&&pos(v.focusDistance)&&v.lightingPasses>=1&&v.dofSamples>=1&&pos(v.fieldSpacing)&&v.previewIterations>=1&&v.detailIterations>=1&&v.giSamples>=0&&v.giSteps>=1&&nonneg(v.giStrength)&&pos(v.giRange)&&
+ pos(v.minEpsilon)&&pos(v.pixelTolerance)&&color(v.skyColor)&&v.steps>=1&&block(v.previewBlock)&&v.interlace>=1&&
+ v.ao>=0&&v.shadow>=0&&v.samples>=1&&
+ pos(v.epsilon)&&pos(v.safety)&&pos(v.farClip)&&fin(v.fov)&&v.fov>0&&v.fov<180&&
+ nonneg(v.eyeSeparation)&&pos(v.convergence)&&nonneg(v.exposure)&&nonneg(v.fog)&&
+ fin(v.lightYaw)&&fin(v.lightPitch)&&fin(v.palette)&&v.palette>=0&&v.palette<=3&&nonneg(v.specular)&&pos(v.budgetMs)&&
+ fin(s.camera.position.x)&&fin(s.camera.position.y)&&fin(s.camera.position.z)&&
+ v.batchSize>=1&&v.targetFps>=1&&v.historyFrames>=1&&v.refreshRate>=1&&
+ (fin(v.relaxation)&&v.relaxation>=1)&&fin(v.gradientScale)&&fin(v.gradientOffset)&&
+ (v.meshStride==4||v.meshStride==8||v.meshStride==16)&&pos(v.meshEdge)&&pos(v.meshNear)&&
+ color(v.gradientLow)&&color(v.gradientHigh)&&
+ pos(s.camera.surfaceRange)&&pos(s.camera.minimumSpeed)&&fin(s.camera.yaw)&&fin(s.camera.pitch)&&std::fabs(s.camera.pitch)<=1.5707f&&pos(s.camera.speed);
 }
 }
 bool saveScene(const Scene& s,const std::string& path,std::string& error){
@@ -64,7 +68,7 @@ bool saveScene(const Scene& s,const std::string& path,std::string& error){
 }
 bool loadScene(Scene& s,const std::string& path,std::string& error){
  std::ifstream in(path,std::ios::binary);if(!in){error="Scene slot is empty";return false;}
- in.seekg(0,std::ios::end);auto size=in.tellg();if(size<0||size>65536){error="Scene file too large";return false;}in.seekg(0);
+ in.seekg(0,std::ios::end);auto size=in.tellg();if(size<0||size>(64<<20)){error="Scene file too large";return false;}in.seekg(0);
  Scene next;next.settings.boundedGradient=false;std::string magic;int version=0;in>>magic>>version;
  if(magic!="REFRACT"||(version<1||version>10)){error="Unsupported scene format";return false;}
  Formula& f=next.formula;Settings& v=next.settings;Camera& c=next.camera;
@@ -78,7 +82,7 @@ bool loadScene(Scene& s,const std::string& path,std::string& error){
  in>>v.customGradient>>v.gradientRepeat>>v.gradientLow.x>>v.gradientLow.y>>v.gradientLow.z>>v.gradientHigh.x>>v.gradientHigh.y>>v.gradientHigh.z>>v.gradientScale>>v.gradientOffset;
  in>>c.surfaceSpeed>>c.surfaceRange>>c.minimumSpeed;
  }
- int count=0;in>>count;if(count<1||count>MaxStages){error="Invalid stage count";return false;}
+ int count=0;in>>count;if(count<1||count>1000000){error="Invalid stage count";return false;}
  f.stages.clear();for(int i=0;i<count;++i){Stage a;int kind=0;in>>kind>>a.enabled>>a.a>>a.b>>a.c;a.kind=Kind(kind);
   for(auto& text:a.text)in>>std::quoted(text);
   f.stages.push_back(a);

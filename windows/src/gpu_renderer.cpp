@@ -12,6 +12,7 @@
 #include "gpu_renderer.hpp"
 #include "gl_loader.hpp"
 #include <algorithm>
+#include <climits>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -544,23 +545,16 @@ bool GpuRenderer::supports(const Scene& scene,std::string& reason){
  const Formula& f=scene.formula;const Settings& o=scene.settings;
  auto no=[&](const char* why){reason=why;return false;};
  if(f.activeCount<1||f.activeCount>MaxStages)return no("formula has no valid active stage list");
- if(f.iterations<1||f.iterations>256)return no("iterations outside 1..256");
- if(!(f.bailout<=1e6f))return no("bailout above 1e6");
- if(!(o.farClip<=1e5f))return no("far clip above 1e5");
  int exprCode=0;
  for(int i=0;i<f.activeCount;++i){const Stage& st=f.stages[f.active[i]];
   if(int(st.kind)<0||st.kind>=Kind::Count)return no("unknown stage kind");
   if(st.kind==Kind::Expression)for(int j=0;j<3;++j){exprCode+=st.expr[j].count;if(st.expr[j].stack>32)return no("expression stack above 32");}
  }
+ if(SDL_GL_GetCurrentContext()){ // each stage needs 3 vec4 + a mat3 (3 vec4) of uniforms
+  GLint comps=0;glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_COMPONENTS,&comps);
+  if(comps>0&&(6*f.activeCount+48)*4>comps)return no("stage count exceeds the GPU uniform limit");
+ }
  if(exprCode>1200)return no("expression stages too large for the shader generator");
- if(o.steps>4096)return no("more than 4096 march steps");
- if(o.ao>32)return no("more than 32 AO samples");
- if(o.shadow>512)return no("more than 512 shadow steps");
- if(o.quality&&o.samples>16)return no("more than 16 supersamples");
- if(o.dof&&o.aperture>0&&o.dofSamples>64)return no("more than 64 depth-of-field samples");
- if(o.giSamples>64)return no("more than 64 GI samples");
- if(o.giSamples>0&&o.giSteps>1024)return no("more than 1024 GI steps");
- if(progressiveActive(o)&&o.lightingPasses>256)return no("more than 256 progressive lighting passes");
  if(o.upscale!=0&&finalBlock(o)>1)return no("upscale filter on a coarse final render");
  reason.clear();return true;
 }
@@ -641,20 +635,20 @@ void GpuRenderer::Impl::setUniforms(const Scene& scene,int rw,int rh){
  u1f("uFar",o.farClip);u1f("uEps",o.epsilon);u1f("uSafety",o.safety);u1f("uFog",o.fog);
  u1f("uExposure",o.exposure);u1f("uSpecular",o.specular);u1f("uSun",o.sunStrength);u1f("uEmission",o.emission);
  u1f("uRelax",(!o.quality&&!f.repeat&&o.relaxation>1)?o.relaxation:1.f);
- u1i("uQuality",o.quality?1:0);u1i("uSteps",o.quality?std::min(8192,o.steps*2):o.steps);
+ u1i("uQuality",o.quality?1:0);u1i("uSteps",int(std::min<long long>(INT_MAX,o.quality?(long long)o.steps*2:(long long)o.steps)));
  u1i("uAo",std::max(0,o.ao));u1i("uShadow",std::max(0,o.shadow));
  u1i("uAdaptive",o.adaptivePrecision?1:0);u1f("uMinEps",o.minEpsilon);u1f("uPixTol",o.pixelTolerance);
  u3f("uSky",o.skyColor);
  // Sampling plan, mirroring renderJob() for a finished image.
  bool lens=o.dof&&o.aperture>0,prog=progressiveActive(o),split=separateActive(o);
- int count=o.quality?std::max(1,std::min(o.samples,16)):1;
- if(lens)count=std::max(count,std::max(1,std::min(o.dofSamples,64)));
+ int count=o.quality?std::max(1,o.samples):1;
+ if(lens)count=std::max(count,std::max(1,o.dofSamples));
  bool accumulate=prog&&!split;
  u1i("uCount",count);u1i("uLens",lens?1:0);u1f("uAperture",o.aperture);u1f("uFocus",o.focusDistance);
  u1i("uVaried",(lens||accumulate||split)?1:0);u1i("uLinear",(lens||accumulate)?1:0);
- u1i("uPasses",(accumulate||split)&&prog?std::max(1,std::min(o.lightingPasses,256)):1);
+ u1i("uPasses",(accumulate||split)&&prog?std::max(1,o.lightingPasses):1);
  u1i("uBlock",finalBlock(o));
- u1i("uGiSamples",std::max(0,std::min(o.giSamples,64)));u1i("uGiSteps",std::max(0,std::min(o.giSteps,1024)));
+ u1i("uGiSamples",std::max(0,o.giSamples));u1i("uGiSteps",std::max(0,o.giSteps));
  u1f("uGiStrength",o.giStrength);u1f("uGiRange",o.giRange);
  // point lights
  float pos[6],col[6],inten[2],range[2];
@@ -678,7 +672,7 @@ void GpuRenderer::Impl::setUniforms(const Scene& scene,int rw,int rh){
  u1i("uGradRepeat",o.gradientRepeat?1:0);u1i("uGradBounded",o.boundedGradient?1:0);
  u1i("uGradStops",o.customGradient&&o.gradientStops>2?std::min(5,o.gradientStops):2);
  // The caller supplies the iteration count to render with (see renderingIterations()).
- u1i("uIter",f.iterations);u1f("uBail2",f.bailout*f.bailout);u1f("uTermR",f.terminalRadius);u1f("uDScale",f.derivativeScale);
+ u1i("uIter",f.iterations);u1f("uBail2",float(std::min(double(f.bailout)*double(f.bailout),3.0e38)));u1f("uTermR",f.terminalRadius);u1f("uDScale",f.derivativeScale);
  u3f("uJulia",f.constant);u3f("uPeriod",f.repeatPeriod);
  // per-stage parameters, indexed by position in the active-stage list
  int n=f.activeCount;

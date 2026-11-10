@@ -9,7 +9,8 @@
 namespace rf {
 // Windows port: render resolution is runtime-configurable. Call Renderer::resize() after changing it.
 inline int W=400,H=240;
-constexpr int MaxStages=32,MaxCode=128;
+// Stage count is unbounded (Formula::active is dynamic). MaxStages is only kept so older code that compares against it still compiles.
+constexpr int MaxStages=1<<30,MaxCode=128;
 inline float clamp(float x,float a,float b){return std::fmax(a,std::fmin(b,x));}
 // Sub-pixel sample position in [0,1)^2 for sample i of count. count<=4 keeps the original 2x2 grid;
 // larger counts use the R2 low-discrepancy sequence. Shared by the CPU engine and the GPU shader.
@@ -58,7 +59,7 @@ struct Formula {
  bool repeat=false;Vec repeatPeriod{16,16,16};
  float derivativeScale=1;
  int terminal=0;float terminalRadius=1;
- std::array<int,MaxStages> active{};int activeCount=0,kernel=0;
+ std::vector<int> active;int activeCount=0,kernel=0;
  bool validate(std::string& error);
 };
 Formula preset(int index);
@@ -163,6 +164,7 @@ struct UpscaleWorkspace {std::vector<UpscaleAxis> x,y;std::vector<Vec> horizonta
 void upscaleImage(const std::vector<Color>& source,std::vector<Color>& output,int block,int method,ParallelFor loop=nullptr,void* context=nullptr,UpscaleWorkspace* workspace=nullptr);
 class Renderer {
  std::array<std::vector<Color>,2> pixels,presented;bool presentedReady=false;
+ std::vector<RenderJob> jobBuffer;std::vector<RenderResult> resultBuffer;
  UpscaleWorkspace upscaleWorkspace;
  void present(const Settings& settings,int eyes);
  std::array<std::vector<uint8_t>,2> emptyMask;int emptyBlock=0,emptyColumns=0,emptyRows=0,emptyPass=0;

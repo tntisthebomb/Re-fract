@@ -71,7 +71,7 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  }else rays.ray(s,x,y,eye,origin,dir);
  float t=surface?surface->depth:startDepth,trap=surface?surface->trap:0;bool hit=surface&&!surface->background;const Settings& o=s.settings;
  float previousT=0,previousD=0,advance=0;bool relaxed=false;
- int steps=o.quality?std::min(4096,o.steps*2):o.steps;
+ int steps=o.quality?(o.steps>1073741823?o.steps:o.steps*2):o.steps;
  int budget=o.adaptiveRayBudget&&!o.quality&&skyLikely?std::min(steps,o.rayMinSteps):steps;
  for(int i=0;!surface&&i<steps&&t<o.farClip;++i){
   if(i==budget&&budget<steps){if(!o.rayBudgetRetry)break;++result.profile.budgetRetries;}
@@ -215,7 +215,7 @@ Vec gradientColor(const Settings& s,float trap){
 Color trace(const Scene& s,const Rays& rays,float x,float y,float eye){return sampleRay(s,rays,x,y,eye,false).color;}
 void Profile::add(const Profile& p){rays+=p.rays;steps+=p.steps;distanceQueries+=p.distanceQueries;shadingQueries+=p.shadingQueries;reused+=p.reused;skipped+=p.skipped;relaxFallbacks+=p.relaxFallbacks;batches+=p.batches;skySkipped+=p.skySkipped;lightingSkipped+=p.lightingSkipped;budgetRetries+=p.budgetRetries;depthStarts+=p.depthStarts;}
 RenderResult renderJob(const Scene& s,const Rays& rays,const RenderJob& j){
- RenderResult result;int red=0,green=0,blue=0,count=s.settings.quality?s.settings.samples:1;
+ RenderResult result;long long red=0,green=0,blue=0;int count=s.settings.quality?s.settings.samples:1;
  bool coarseLighting=(!j.moving&&!j.surface&&separateActive(s.settings))||(!j.moving&&progressiveActive(s.settings)&&s.settings.autoRefine&&j.block>lightingTarget(s.settings));
  bool lens=!j.surface&&s.settings.dof&&s.settings.aperture>0&&!j.moving&&!coarseLighting;
  if(lens)count=std::max(count,s.settings.dofSamples);
@@ -242,7 +242,7 @@ void Renderer::resize(int width,int height){
  presentedReady=false;historyCount=historyCursor=0;cacheReady=false;done=false;index=lane=0;++revision;
 }
 Color shadeCell(const Scene& s,const Rays& r,int x,int y,int b,float eye,int count){
- int red=0,green=0,blue=0;for(int i=0;i<count;++i){float jx,jy;samplePattern(i,count,jx,jy);
+ long long red=0,green=0,blue=0;for(int i=0;i<count;++i){float jx,jy;samplePattern(i,count,jx,jy);
  Color c=trace(s,r,std::min(W-.5f,x+b*jx),std::min(H-.5f,y+b*jy),eye);red+=c.r;green+=c.g;blue+=c.b;}
  return {uint8_t(red/count),uint8_t(green/count),uint8_t(blue/count)};
 }
@@ -319,7 +319,7 @@ bool Renderer::captureSurface(const Scene& s,SurfaceMesh& mesh)const{
 }
 void Renderer::endFrame(const Scene& s,float totalMs,float renderMs,uint64_t jobs){
  frameMs=totalMs;if(jobs){float cost=renderMs/jobs;averageJobMs=averageJobMs==0?cost:averageJobMs*.8f+cost*.2f;}
- batchLimit=std::max(1,std::min(s.settings.batchSize,int(s.settings.budgetMs*.5f/std::max(.001f,averageJobMs))));
+ batchLimit=std::max(1,std::min(s.settings.batchSize,int(std::min(1e6f,s.settings.budgetMs*.5f/std::max(.001f,averageJobMs)))));
  if(moving&&s.settings.adaptiveResolution&&frame%15==0){float target=1000.f/s.settings.targetFps;
  float estimate=averageJobMs*((W+dynamicBlock-1)/dynamicBlock)*((H+dynamicBlock-1)/dynamicBlock)*activeEyes;
  if(estimate>target*2)dynamicBlock=std::min(32,dynamicBlock*2);
@@ -424,13 +424,15 @@ void Renderer::step(const Scene& s,const Rays& rays,float slider){
  if(done)return;
  if(!passTiming){passStart=std::chrono::steady_clock::now();passTiming=true;}
  const auto& o=s.settings;bool stereo=o.stereo&&slider>.001f&&o.eyeSeparation>0;int eyes=stereo?2:1;activeEyes=eyes;
- RenderJob jobs[32];RenderResult results[32];int count=0,limit=std::min(32,std::max(eyes,std::min(o.batchSize,batchLimit)));
+ int count=0,limit=std::max(eyes,std::min(o.batchSize,batchLimit));
+ if(int(jobBuffer.size())<limit){jobBuffer.resize(limit);resultBuffer.resize(limit);}
+ RenderJob* jobs=jobBuffer.data();RenderResult* results=resultBuffer.data();
  bool split=!moving&&separateActive(o);
  int stride=lightingOnly?std::max(geometryBlock,o.lightingBlock):block;
  bool accumulate=!split&&!moving&&progressiveActive(o)&&(block<=lightingTarget(o)||!o.autoRefine);
  if(accumulate&&accumulation[0].empty())for(auto& sum:accumulation)sum.resize(W*H);
  int nx=(W+stride-1)/stride,total=nx*((H+stride-1)/stride),lanes=std::min(o.interlace,total),scan=0;
- while(count+eyes<=limit&&scan++<32){int cell=lane+index*lanes;
+ while(count+eyes<=limit&&scan++<std::max(32,limit)){int cell=lane+index*lanes;
   if(cell>=total){++lane;index=0;if(lane>=lanes){lane=0;
    if((!moving&&block>(split?o.stillBlock:progressiveActive(o)?lightingTarget(o):(o.quality?1:o.stillBlock))&&o.autoRefine)||accumulate||split){
     // Commit the last batch before advancing a refinement/accumulation pass.

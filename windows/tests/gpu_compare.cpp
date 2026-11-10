@@ -51,6 +51,10 @@ static void bloom(Scene& s){s.settings.bloom=.9f;s.settings.exposure=1.6f;}
 static void adaptive(Scene& s){s.settings.adaptivePrecision=true;s.settings.minEpsilon=1e-6f;s.settings.pixelTolerance=.25f;}
 static void relax(Scene& s){s.settings.relaxation=1.6f;}
 static void stillBlock2(Scene& s){s.settings.stillBlock=2;}
+static void extreme(Scene& s){auto& o=s.settings;o.quality=true;o.samples=32;o.steps=20000;o.ao=64;o.shadow=1000;o.farClip=1e5f;
+ std::string e;s.formula.validate(e);s.formula.iterations=500;s.formula.bailout=1e9f;} // set after validate: app-side limits are being removed
+static void manyStages(Scene& s){Stage st;st.kind=Kind::Offset;st.a=st.b=st.c=0;
+ for(int i=0;i<40;++i)s.formula.stages.push_back(st);std::string e;s.formula.validate(e);}
 static void everything(Scene& s){gi4(s);lampsShadow(s);gradient5(s);s.settings.bloom=.4f;s.settings.ao=4;s.settings.emission=.1f;adaptive(s);}
 
 // Same algorithm as Renderer::applyBloom (private there), for the reference image.
@@ -98,7 +102,7 @@ int main(int argc,char** argv){
   // stochastic: depth of field, GI
   {"6 dof",6,dof},{"37 dof",37,dof},{"6 dof quality",6,dofQuality},{"6 gi4",6,gi4},{"6 gi12",6,gi12},{"36 gi12",36,gi12},
   {"38 gi+lamps",38,giLamps},{"37 gi+dof",37,giDof},{"6 progressive gi",6,progressive},
-  {"0 bloom",0,bloom},{"36 everything",36,everything}};
+  {"0 bloom",0,bloom},{"6 extreme limits",6,extreme},{"37 extreme gi dof",37,[](Scene& s){extreme(s);s.settings.samples=4;gi12(s);dof(s);s.settings.dofSamples=16;}},{"6 many stages",6,manyStages},{"36 everything",36,everything}};
  int ci=0;double worst=0;
  std::printf("%-26s %9s %9s %9s %8s %s\n","case","meanAbs","meanBias","big>60","gpu ms","note");
  for(const Case& c:cases){

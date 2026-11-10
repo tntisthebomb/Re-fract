@@ -8,6 +8,12 @@
 #include "distance_field.hpp"
 #include "trace_benchmark.hpp"
 #include <chrono>
+#include <limits>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 #include <cmath>
 #include <functional>
 #include <algorithm>
@@ -80,7 +86,16 @@ Args parseArgs(int argc,char** argv){
  return a;
 }
 // Limits (raised from the 3DS values; the engine validate()/settingsValid() accept the same ranges).
-constexpr size_t GpuMaxPixels=64u*1024*1024,CpuMaxPixels=3840u*2160u;
+// Host memory still available (bytes), or 0 if unknown. Used to refuse render sizes that would exhaust RAM.
+size_t availableMemory(){
+#ifdef _WIN32
+ MEMORYSTATUSEX m{};m.dwLength=sizeof(m);return GlobalMemoryStatusEx(&m)?size_t(std::min<unsigned long long>(m.ullAvailPhys,m.ullAvailVirtual)):0;
+#else
+ long pages=sysconf(_SC_AVPHYS_PAGES),size=sysconf(_SC_PAGE_SIZE);return pages>0&&size>0?size_t(pages)*size_t(size):0;
+#endif
+}
+// Approximate host bytes per pixel: CPU renderer buffers (both eyes, shading records, lighting caches) / GPU readback and export copies.
+constexpr size_t CpuBytesPerPixel=300,GpuBytesPerPixel=24;
 }
 int main(int argc,char** argv){
  Args args=parseArgs(argc,argv);bool headless=args.frames>0;
@@ -95,8 +110,7 @@ int main(int argc,char** argv){
  SDL_GL_SetSwapInterval(headless?0:1);
  if(!loadGL()){std::fprintf(stderr,"OpenGL 3.3 entry points are missing\n");return 1;}
  int maxTexture=4096;{GLint v=0;glGetIntegerv(GL_MAX_TEXTURE_SIZE,&v);if(v>0)maxTexture=v;}
- const int sizeLimit=std::min(16384,maxTexture);
- Display display;{std::string error;if(!display.init(error)){std::fprintf(stderr,"Display shader failed: %s\n",error.c_str());return 1;}}
+  Display display;{std::string error;if(!display.init(error)){std::fprintf(stderr,"Display shader failed: %s\n",error.c_str());return 1;}}
  WorkerPool pool;int threads=std::max(1u,std::thread::hardware_concurrency());pool.start(threads);
  const std::string dir=dataDirectory();
 
@@ -123,7 +137,7 @@ int main(int argc,char** argv){
   if(wantGpu&&!gpu.init(error)){wantGpu=false;status="GPU UNAVAILABLE / CPU BACKEND";if(!error.empty())std::fprintf(stderr,"GPU init failed: %s\n",error.c_str());}
   if(!wantGpu){resIndex=0;if(status.empty())status="CPU BACKEND";}
   if(args.gpu&&!wantGpu){std::fprintf(stderr,"GPU backend requested but unavailable\n");}
-  if(args.width>0&&args.height>0){customW=std::max(64,std::min(16384,args.width));customH=std::max(64,std::min(16384,args.height));resIndex=CustomResolution;}
+  if(args.width>0&&args.height>0){customW=std::max(1,args.width);customH=std::max(1,args.height);resIndex=CustomResolution;}
   if(args.preset>=0&&args.preset<PresetCount)loadPreset(args.preset);
  }
  // Resolve the active render size (clamped to the GL texture limit and a memory budget for the active backend).
@@ -133,10 +147,11 @@ int main(int argc,char** argv){
   else if(resIndex==CustomResolution){w=customW;h=customH;}
   else{w=resolutions[resIndex].w;h=resolutions[resIndex].h;}
   int rw=w,rh=h;
-  w=std::max(64,std::min(sizeLimit,w));h=std::max(64,std::min(sizeLimit,h));
-  size_t cap=useGpu?GpuMaxPixels:CpuMaxPixels;
-  if(size_t(w)*size_t(h)>cap){double k=std::sqrt(double(cap)/(double(w)*h));w=std::max(64,int(w*k));h=std::max(64,int(h*k));}
-  sizeNote=(w!=rw||h!=rh)?(std::string(useGpu?"RESOLUTION LIMITED TO ":"CPU RESOLUTION LIMITED TO ")+std::to_string(w)+"X"+std::to_string(h)):"";
+  // No fixed size limits: only what OpenGL textures and host memory can actually hold.
+  w=std::max(1,std::min(maxTexture,w));h=std::max(1,std::min(maxTexture,h));
+  size_t per=useGpu?GpuBytesPerPixel:CpuBytesPerPixel,avail=availableMemory();
+  if(avail&&double(w)*h*per>double(avail)*.7){double k=std::sqrt(double(avail)*.7/(double(w)*h*per));w=std::max(1,int(w*k));h=std::max(1,int(h*k));}
+  sizeNote=(w!=rw||h!=rh)?(std::string(useGpu?"RESOLUTION LIMITED BY GPU/RAM TO ":"RESOLUTION LIMITED BY RAM TO ")+std::to_string(w)+"X"+std::to_string(h)):"";
  };
  std::vector<uint64_t> uploaded(2,0);bool uploadedStereo=false;
  auto applyBackend=[&](){
@@ -146,7 +161,7 @@ int main(int argc,char** argv){
    if(!gpu.resize(w,h)){useGpu=false;forceCpu=true;status="GPU RESIZE FAILED / CPU BACKEND";targetSize(w,h);}}
   if(!useGpu){
    try{renderer.resize(w,h);}
-   catch(const std::bad_alloc&){w=std::min(w,1280);h=std::min(h,720);W=w;H=h;renderer.resize(w,h);status="OUT OF MEMORY / 1280X720";sizeNote.clear();}
+   catch(const std::bad_alloc&){w=std::min(w,1280);h=std::min(h,720);W=w;H=h;renderer.resize(w,h);status="OUT OF MEMORY / FELL BACK TO 1280X720";sizeNote.clear();resIndex=3;}
    uploaded.assign(2,0);
   }
   if(!sizeNote.empty())status=sizeNote;
@@ -314,71 +329,76 @@ int main(int argc,char** argv){
    if(scene.camera.yaw< -3.14159265f)scene.camera.yaw+=6.2831853f;
    scene.camera.pitch=clamp(scene.camera.pitch+pitch*dt*1.3f+lookPitch,-1.5f,1.5f);
    Rays basis(scene);float speed=scene.camera.speed*cameraSpeedScale(scene)*dt*(held&KEY_X?3:1);
-   scene.camera.position=scene.camera.position+(basis.forward*forward+basis.right*strafe+Vec{0,vertical,0})*speed;
-   scene.camera.position.x=clamp(scene.camera.position.x,-1e6f,1e6f);
-   scene.camera.position.y=clamp(scene.camera.position.y,-1e6f,1e6f);
-   scene.camera.position.z=clamp(scene.camera.position.z,-1e6f,1e6f);
+   Vec moved=scene.camera.position+(basis.forward*forward+basis.right*strafe+Vec{0,vertical,0})*speed;
+   if(std::isfinite(moved.x)&&std::isfinite(moved.y)&&std::isfinite(moved.z))scene.camera.position=moved;
   }
   // MATCH WINDOW follows the render view once its size has been stable for a moment.
-  if(resIndex==MatchWindow){int w=std::max(64,std::min(sizeLimit,lay.vw)),h=std::max(64,std::min(sizeLimit,lay.vh));
+  if(resIndex==MatchWindow){int w=std::max(1,lay.vw),h=std::max(1,lay.vh);
    if(matchW==0){matchW=w;matchH=h;applyPending=true;}
    else if(w!=matchW||h!=matchH){if(matchSince==0)matchSince=nowMs();if(nowMs()-matchSince>300){matchW=w;matchH=h;matchSince=0;applyPending=true;}}
    else matchSince=0;}
   if(menuDirty||changed||menuTab!=tab||(motion&&tab==4)||(tab==5&&now>=nextMenuRefresh)){
   fields.clear();menuDirty=false;menuTab=tab;nextMenuRefresh=now+250;panelRefresh=true;
+  bool selectedKindIsMenger=tab==3&&!scene.formula.stages.empty()&&scene.formula.stages[std::min(stageIndex,int(scene.formula.stages.size())-1)].kind==Kind::Menger;
   auto action=[&](std::string label,std::string value,std::function<void()> fn){fields.push_back({{label,value},{},fn});};
   auto real=[&](std::string label,float& v,float step,float lo,float hi){
-   if(label=="GRADIENT SCALE"){lo=-10000;hi=10000;}else if(label=="GRADIENT OFFSET"){lo=-10000;hi=10000;}
-   else if(label=="HIT EPSILON"||label=="MIN HIT EPSILON"){lo=1e-9f;hi=1;}
-   else if(label=="FAR CLIP"){lo=.01f;hi=100000;}else if(label=="STEP SAFETY"){lo=.001f;hi=4;}
-   else if(label=="EXPOSURE"||label=="SUN STRENGTH"||label=="COLOR EMISSION"||label=="BLOOM HALO"){lo=0;hi=100;}
-   else if(label=="SPECULAR"||label=="INDIRECT STRENGTH"){lo=0;hi=20;}
-   else if(label=="POINT INTENSITY"){lo=0;hi=10000;}else if(label=="POINT RANGE"||label=="INDIRECT RANGE"||label=="FOCUS DISTANCE"||label=="CONVERGENCE"){lo=.0001f;hi=10000;}
-   else if(label=="EYE SEPARATION"){lo=0;hi=2;}
-   else if(label=="LENS APERTURE"){lo=0;hi=100;}else if(label=="FOG DENSITY"){lo=0;hi=100;}
-   else if(label=="MOVE SPEED"){lo=.00001f;hi=1000;}else if(label=="FRAME BUDGET MS"){lo=1;hi=100;}
-   else if(label=="BAILOUT"){lo=2;hi=1000000;}else if(label=="TERMINAL RADIUS"){lo=.000001f;hi=10000;}
-   else if(label=="DERIVATIVE SCALE"){lo=.001f;hi=10000;}
-   else if(label=="FIELD OF VIEW"){lo=1;hi=175;}
-   else if(label=="POWER"){lo=1.01f;hi=64;}else if(label=="THETA MULTIPLIER"||label=="PHI MULTIPLIER"){lo=-32;hi=32;}
-   else if(label=="FOLD X"||label=="FOLD Y"||label=="FOLD Z"||label=="MINIMUM RADIUS"||label=="FIXED RADIUS"){lo=.000002f;hi=10000;}
-   else if(label=="INVERSION RADIUS"){lo=.000001f;hi=1000;}
-   else if(label=="SCALE"||label=="C MULTIPLIER"||label=="X OFFSET"||label=="Y OFFSET"||label=="Z OFFSET"||label=="FOLD LIMIT"){lo=-10000;hi=10000;}
-   fields.push_back({{label,number(v)},[&,step,lo,hi](int d){v=clamp(v+d*step*adjustScale,lo,hi);changed=true;},
+   // No artificial limits: any finite value is accepted. Only conditions the math needs are enforced
+   // (positive divisors / radii, non-negative strengths, FOV in (0,180), pitch within +-1.5 for a stable basis).
+   const float Inf=std::numeric_limits<float>::infinity(),Tiny=std::numeric_limits<float>::min();
+   static const char* positive[]={"HIT EPSILON","MIN HIT EPSILON","PIXEL TOLERANCE","STEP SAFETY","FAR CLIP","FRAME BUDGET MS","FOCUS DISTANCE","CONVERGENCE",
+    "POINT RANGE","INDIRECT RANGE","FIELD GRID SPACING","BAILOUT","TERMINAL RADIUS","DERIVATIVE SCALE","SLOWDOWN DISTANCE","MIN SPEED FRACTION","MOVE SPEED",
+    "GI ERROR THRESHOLD","GI DEPTH EDGE","MINIMUM RADIUS","FIXED RADIUS","FOLD X","FOLD Y","FOLD Z","INVERSION RADIUS"};
+   static const char* nonnegative[]={"LENS APERTURE","FOG DENSITY","SPECULAR","EXPOSURE","SUN STRENGTH","COLOR EMISSION","BLOOM HALO","POINT INTENSITY","INDIRECT STRENGTH",
+    "EYE SEPARATION","REPEAT X SPACING","REPEAT Y SPACING","REPEAT Z SPACING"};
+   bool keep=label=="STEREO STRENGTH"||label=="CAMERA PITCH";
+   if(!keep){lo=-Inf;hi=Inf;
+    for(const char* p:positive)if(label==p)lo=Tiny;
+    for(const char* p:nonnegative)if(label==p)lo=0;
+    if(label=="FIELD OF VIEW"){lo=.01f;hi=179.99f;}
+    else if(label=="POWER")lo=1.0001f;
+    else if(label=="PREPASS START FRACTION"){lo=0;hi=.999f;}
+    else if(label=="RELAXATION EXP")lo=1;
+    else if(label=="POINT RANGE")lo=Tiny;
+    else if(label=="SCALE"&&selectedKindIsMenger)lo=1.0001f;}
+   fields.push_back({{label,number(v)},[&,step,lo,hi](int d){float n=clamp(v+d*step*adjustScale,lo,hi);if(std::isfinite(n))v=n;changed=true;},
     [&,label,lo,hi](){std::string input=number(v);if(keyboard(label,input)){char* end=nullptr;errno=0;float n=std::strtof(input.c_str(),&end);
      if(end!=input.c_str()&&*end=='\0'&&errno==0&&std::isfinite(n)&&n>=lo&&n<=hi){v=n;changed=true;}else status="INVALID NUMBER / RANGE";
     }} });
   };
   auto integer=[&](std::string label,int& v,int step,int lo,int hi,std::function<void()> hook={}){
-   if(label=="RAY STEPS"||label=="SHADOW STEPS"||label=="INDIRECT STEPS")hi=4096;
-   else if(label=="ITERATIONS"||label=="MOVE ITERATIONS"||label=="DETAIL ITERATION CAP")hi=256;
-   else if(label=="AO SAMPLES"||label=="INDIRECT SAMPLES")hi=64;
-   else if(label=="LIGHTING PASSES")hi=4096;
-   else if(label=="TARGET REFRESH FPS"){lo=5;hi=240;}
-   fields.push_back({{label,std::to_string(v)},[&,step,lo,hi,hook](int d){int mult=adjustScale>=1?int(adjustScale+.5f):1;v=std::max(lo,std::min(hi,v+d*step*mult));changed=true;if(hook)hook();},
-    [&,label,lo,hi,hook](){std::string input=std::to_string(v);if(keyboard(label,input)){char* end=nullptr;errno=0;long n=std::strtol(input.c_str(),&end,10);
+   bool structural=label=="GRADIENT STOPS"||label=="STAGE INDEX"||label=="EDIT STAGE"||label=="SCENE SLOT"||label=="TERMINAL SHAPE";
+   if(!structural)hi=std::numeric_limits<int>::max();
+   if(label=="RAY STEPS"||label=="SKY RAY MIN STEPS"||label=="INDIRECT STEPS"||label=="GI MIN PASSES"||label=="TARGET REFRESH FPS")lo=1;
+   auto stepped=[](int value,long long delta,int low,int high){long long n=(long long)value+delta;return int(std::max<long long>(low,std::min<long long>(high,n)));};
+   fields.push_back({{label,std::to_string(v)},[&,step,lo,hi,hook,stepped](int d){long long mult=adjustScale>=1?(long long)(adjustScale+.5f):1;v=stepped(v,(long long)d*step*mult,lo,hi);changed=true;if(hook)hook();},
+    [&,label,lo,hi,hook](){std::string input=std::to_string(v);if(keyboard(label,input)){char* end=nullptr;errno=0;long long n=std::strtoll(input.c_str(),&end,10);
      if(end!=input.c_str()&&*end=='\0'&&errno==0&&n>=lo&&n<=hi){v=int(n);changed=true;if(hook)hook();}else status="INVALID INTEGER / RANGE";
     }} });
   };
+  // Block sizes: any integer >= 1 (typed), D-pad / wheel halves or doubles. Capped at 2^20 only to keep index math in int range.
+  auto blocks=[&](std::string label,int& v){
+   auto set=[&,label](int n){v=std::max(1,std::min(1<<20,n));changed=true;};
+   fields.push_back({{label,std::to_string(v)},[&,set](int d){set(d>0?v*2:v/2);},
+    [&,label,set](){std::string input=std::to_string(v);if(keyboard(label,input)){char* end=nullptr;errno=0;long n=std::strtol(input.c_str(),&end,10);
+     if(end!=input.c_str()&&*end=='\0'&&errno==0&&n>=1&&n<=(1<<20))set(int(n));else status="INVALID INTEGER / RANGE";}}});
+  };
   auto boolean=[&](std::string label,bool& v){auto fn=[&](){v=!v;changed=true;};fields.push_back({{label,v?"ON":"OFF"},[fn](int){fn();},fn});};
-  auto choice=[&](std::string label,int& v,const std::vector<int>& values){fields.push_back({{label,std::to_string(v)},
-   [&,values](int dir){auto it=std::find(values.begin(),values.end(),v);int i=it==values.end()?0:int(it-values.begin());i=(i+dir+int(values.size()))%int(values.size());v=values[i];changed=true;},{}});};
   // PC-only rows: cycle through named values; `scene` is untouched unless render parameters change.
   auto cycle=[&](std::string label,std::string value,std::function<void(int)> fn){fields.push_back({{label,value},[&,fn](int d){fn(d);menuDirty=true;},[&,fn](){fn(1);menuDirty=true;}});};
   if(tab==0){for(int i=0;i<PresetCount;++i)action(presetName(i),presetIndex==i?"CURRENT":"A LOAD",[&,i](){loadPreset(i);changed=true;status="PRESET LOADED";});}
   else if(tab==1){Settings& v=scene.settings;
-   boolean("QUALITY MODE",v.quality);choice("PREVIEW BLOCK",v.previewBlock,{2,4,8,16});choice("STILL BLOCK",v.stillBlock,{1,2,4,8,16});
+   boolean("QUALITY MODE",v.quality);blocks("PREVIEW BLOCK",v.previewBlock);blocks("STILL BLOCK",v.stillBlock);
    const char* scaling[]={"NEAREST","BILINEAR","BICUBIC"};fields.push_back({{"UPSCALING",scaling[v.upscale]},[&](int d){v.upscale=(v.upscale+d+3)%3;changed=true;},{}});integer("INTERLACE LANES",v.interlace,1,1,8);
-   integer("RAY STEPS",v.steps,8,8,4096);real("HIT EPSILON",v.epsilon,.0005f,.000001f,.05f);boolean("ZOOM PRECISION EXP",v.adaptivePrecision);real("MIN HIT EPSILON",v.minEpsilon,.000001f,.000001f,.001f);real("PIXEL TOLERANCE",v.pixelTolerance,.05f,.05f,2);real("STEP SAFETY",v.safety,.05f,.05f,1);
+   integer("RAY STEPS",v.steps,8,1,1);real("HIT EPSILON",v.epsilon,.0005f,.000001f,.05f);boolean("ZOOM PRECISION EXP",v.adaptivePrecision);real("MIN HIT EPSILON",v.minEpsilon,.000001f,.000001f,.001f);real("PIXEL TOLERANCE",v.pixelTolerance,.05f,.05f,2);real("STEP SAFETY",v.safety,.05f,.05f,1);
    real("FAR CLIP",v.farClip,1,1,100000);real("FRAME BUDGET MS",v.budgetMs,1,1,100);boolean("AUTO REFINE",v.autoRefine);boolean("ADAPT DETAIL EXP",v.adaptiveDetail);integer("MOVE ITERATIONS",v.previewIterations,1,1,256);integer("DETAIL ITERATION CAP",v.detailIterations,1,1,256);
-   boolean("DEPTH OF FIELD",v.dof);real("LENS APERTURE",v.aperture,.01f,0,100);real("FOCUS DISTANCE",v.focusDistance,.1f,.001f,10000);choice("LENS SAMPLES",v.dofSamples,{1,2,4,8,16,32,64});
+   boolean("DEPTH OF FIELD",v.dof);real("LENS APERTURE",v.aperture,.01f,0,100);real("FOCUS DISTANCE",v.focusDistance,.1f,.001f,10000);integer("LENS SAMPLES",v.dofSamples,1,1,1);
    action("FOCUS AT CONVERGENCE","A MATCH DISTANCE",[&](){v.focusDistance=v.convergence;changed=true;});
-   choice("QUALITY SAMPLES",v.samples,{1,2,4,8,16});integer("AO SAMPLES",v.ao,1,0,64);integer("SHADOW STEPS",v.shadow,4,0,4096);
+   integer("QUALITY SAMPLES",v.samples,1,1,1);integer("AO SAMPLES",v.ao,1,0,64);integer("SHADOW STEPS",v.shadow,4,0,4096);
    boolean("STEREO",v.stereo);real("EYE SEPARATION",v.eyeSeparation,.005f,0,2);real("CONVERGENCE",v.convergence,.2f,.2f,10000);
    boolean("PARALLEL BATCHES",v.parallel);
    integer("BATCH SIZE",v.batchSize,1,1,32);boolean("ADAPT RESOLUTION",v.adaptiveResolution);integer("TARGET REFRESH FPS",v.targetFps,5,5,240);
    boolean("FAST MOVE LIGHTING",v.previewLighting);boolean("DISTANCE FIELD EXP",v.distanceField);real("FIELD GRID SPACING",v.fieldSpacing,.05f,.05f,1);boolean("TEMPORAL EXPERIMENT",v.temporal);boolean("STEREO REUSE EXP",v.stereoReuse);
-   boolean("DEPTH PREPASS",v.depthPrepass);choice("PREPASS BLOCK",v.prepassBlock,{4,8,16,32});real("PREPASS START FRACTION",v.prepassSafety,.05f,0,.9f);boolean("ADAPT RAY BUDGET",v.adaptiveRayBudget);integer("SKY RAY MIN STEPS",v.rayMinSteps,4,4,4096);boolean("RETRY SHORT RAYS",v.rayBudgetRetry);
+   boolean("DEPTH PREPASS",v.depthPrepass);blocks("PREPASS BLOCK",v.prepassBlock);real("PREPASS START FRACTION",v.prepassSafety,.05f,0,.9f);boolean("ADAPT RAY BUDGET",v.adaptiveRayBudget);integer("SKY RAY MIN STEPS",v.rayMinSteps,4,4,4096);boolean("RETRY SHORT RAYS",v.rayBudgetRetry);
    boolean("ADAPT EMPTY SPACE",v.adaptiveEmpty);boolean("ADAPT SKY EDGES",v.adaptiveSkyEdges);integer("SKY PROBE EVERY N",v.emptyProbe,1,1,64);integer("EDGE PROBE EVERY N",v.skyEdgeProbe,1,1,64);integer("SKY NEIGHBORS NEEDED",v.skyNeighbors,1,1,9);integer("DENSE REFRESH PASSES",v.emptyRefresh,1,0,256);
    boolean("ADAPTIVE TILES EXP",v.adaptiveTiles);boolean("FIXED FOVEATION EXP",v.foveated);real("RELAXATION EXP",v.relaxation,.05f,1,1.5f);
    integer("HISTORY FRAMES",v.historyFrames,1,1,30);integer("REFRESH EVERY N",v.refreshRate,1,1,8);
@@ -387,8 +407,8 @@ int main(int argc,char** argv){
    // DISPLAY section (PC additions).
    cycle("BACKEND",wantGpu?(useGpu?"GPU":"GPU>CPU"):"CPU",[&](int){wantGpu=!wantGpu;applyPending=true;changed=true;status=wantGpu?"BACKEND GPU":"BACKEND CPU";});
    cycle("RENDER RESOLUTION",resolutions[resIndex].name,[&](int d){resIndex=(resIndex+d+ResolutionCount)%ResolutionCount;if(resIndex==MatchWindow)matchW=0;applyPending=true;changed=true;});
-   integer("CUSTOM WIDTH",customW,64,64,16384,[&](){resIndex=CustomResolution;applyPending=true;});
-   integer("CUSTOM HEIGHT",customH,36,64,16384,[&](){resIndex=CustomResolution;applyPending=true;});
+   integer("CUSTOM WIDTH",customW,64,1,1,[&](){resIndex=CustomResolution;applyPending=true;});
+   integer("CUSTOM HEIGHT",customH,36,1,1,[&](){resIndex=CustomResolution;applyPending=true;});
    cycle("MOTION SCALE",motionDiv==1?"1":"1/"+std::to_string(motionDiv),[&](int d){motionDiv=d>0?(motionDiv>=4?1:motionDiv*2):(motionDiv<=1?4:motionDiv/2);changed=true;});
    cycle("FULLSCREEN",pf.fullscreen?"ON":"OFF",[&](int){pf.setFullscreen(!pf.fullscreen);});
    cycle("SCALING FILTER",linear?"LINEAR":"NEAREST",[&](int){linear=!linear;});
@@ -407,7 +427,7 @@ int main(int argc,char** argv){
    real("JULIA X",f.constant.x,.05f,-100,100);real("JULIA Y",f.constant.y,.05f,-100,100);real("JULIA Z",f.constant.z,.05f,-100,100);
    integer("EDIT STAGE",stageIndex,1,0,int(f.stages.size())-1);
    action("OPEN STAGE EDITOR","A OPEN",[&](){tab=3;selected=0;});
-   action("ADD STAGE","A ADD OFFSET",[&](){if(f.stages.size()<MaxStages){f.stages.push_back(newStage(Kind::Offset));stageIndex=int(f.stages.size())-1;changed=true;}else status="MAXIMUM 32 STAGES";});
+   action("ADD STAGE","A ADD OFFSET",[&](){f.stages.push_back(newStage(Kind::Offset));stageIndex=int(f.stages.size())-1;changed=true;});
   }else if(tab==3){Formula& f=scene.formula;stageIndex=std::min(stageIndex,int(f.stages.size())-1);Stage& a=f.stages[stageIndex];
    integer("STAGE INDEX",stageIndex,1,0,int(f.stages.size())-1);
    fields.push_back({{"OPERATION",kindName(a.kind)},[&](int d){int k=(int(a.kind)+d+int(Kind::Count))%int(Kind::Count);a=newStage(Kind(k));changed=true;},{}});
@@ -434,7 +454,7 @@ int main(int argc,char** argv){
    }
    action("MOVE EARLIER","A REORDER",[&](){if(stageIndex>0){std::swap(f.stages[stageIndex],f.stages[stageIndex-1]);--stageIndex;changed=true;}});
    action("MOVE LATER","A REORDER",[&](){if(stageIndex+1<int(f.stages.size())){std::swap(f.stages[stageIndex],f.stages[stageIndex+1]);++stageIndex;changed=true;}});
-   action("DUPLICATE STAGE","A COPY",[&](){if(f.stages.size()<MaxStages){Stage copy=a;f.stages.insert(f.stages.begin()+stageIndex+1,copy);++stageIndex;changed=true;}else status="MAXIMUM 32 STAGES";});
+   action("DUPLICATE STAGE","A COPY",[&](){Stage copy=a;f.stages.insert(f.stages.begin()+stageIndex+1,copy);++stageIndex;changed=true;});
    action("DELETE STAGE","A REMOVE",[&](){if(f.stages.size()>1){f.stages.erase(f.stages.begin()+stageIndex);stageIndex=std::min(stageIndex,int(f.stages.size())-1);changed=true;}else status="KEEP AT LEAST ONE STAGE";});
   }else if(tab==4){Settings& v=scene.settings;
    const char* names[]={"RUST","SEA GLASS","NEON ROSE","BONE"};
@@ -460,7 +480,7 @@ int main(int argc,char** argv){
    auto progressive=[&](){v.progressiveLighting=!v.progressiveLighting;if(v.progressiveLighting&&v.giSamples==0)v.giSamples=1;changed=true;};
    fields.push_back({{"PROGRESSIVE LIGHTING",v.progressiveLighting?"ON":"OFF"},[progressive](int){progressive();},progressive});
    boolean("SEPARATE GI RES",v.separateLighting);boolean("ADAPT GI SAMPLES",v.adaptiveLighting);integer("GI MIN PASSES",v.lightingMinPasses,1,2,4096);real("GI ERROR THRESHOLD",v.lightingThreshold,.005f,.0001f,1);integer("GI REFRESH PASSES",v.lightingRefresh,1,0,256);real("GI DEPTH EDGE",v.lightingDepthTolerance,.01f,.001f,1);
-   integer("LIGHTING PASSES",v.lightingPasses,1,1,4096);choice("LIGHTING BLOCK",v.lightingBlock,{1,2,4,8,16});
+   integer("LIGHTING PASSES",v.lightingPasses,1,1,4096);blocks("LIGHTING BLOCK",v.lightingBlock);
    integer("INDIRECT SAMPLES",v.giSamples,1,0,64);integer("INDIRECT STEPS",v.giSteps,4,4,4096);
    real("INDIRECT STRENGTH",v.giStrength,.1f,0,20);real("INDIRECT RANGE",v.giRange,.1f,.1f,10000);colorField("SKY COLOR",v.skyColor);
    real("SPECULAR",v.specular,.05f,0,1);real("FOG DENSITY",v.fog,.01f,0,1);
