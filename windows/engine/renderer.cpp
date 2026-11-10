@@ -71,7 +71,7 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  }else rays.ray(s,x,y,eye,origin,dir);
  float t=surface?surface->depth:startDepth,trap=surface?surface->trap:0;bool hit=surface&&!surface->background;const Settings& o=s.settings;
  float previousT=0,previousD=0,advance=0;bool relaxed=false;
- int steps=o.quality?std::min(8192,o.steps*2):o.steps;
+ int steps=o.quality?std::min(4096,o.steps*2):o.steps;
  int budget=o.adaptiveRayBudget&&!o.quality&&skyLikely?std::min(steps,o.rayMinSteps):steps;
  for(int i=0;!surface&&i<steps&&t<o.farClip;++i){
   if(i==budget&&budget<steps){if(!o.rayBudgetRetry)break;++result.profile.budgetRetries;}
@@ -220,8 +220,8 @@ RenderResult renderJob(const Scene& s,const Rays& rays,const RenderJob& j){
  bool lens=!j.surface&&s.settings.dof&&s.settings.aperture>0&&!j.moving&&!coarseLighting;
  if(lens)count=std::max(count,s.settings.dofSamples);
  Vec radiance;
- for(int i=0;i<count;++i){float jx=count==1?.5f:(i&1)?.75f:.25f,jy=count<=2?.5f:(i&2)?.75f:.25f;
-  // Lens samples repeat the same 1/2/4 pixel pattern while varying the aperture.
+ for(int i=0;i<count;++i){float jx,jy;samplePattern(i,count,jx,jy);
+  // Lens samples repeat the same pixel pattern (see samplePattern) while varying the aperture.
   auto r=sampleRay(s,rays,std::min(W-.5f,j.x+j.block*jx),std::min(H-.5f,j.y+j.block*jy),j.offset,j.fast&&!s.settings.quality,
    j.sample*uint32_t(count)+i,j.accumulate||lens||j.surface,lens,!coarseLighting,j.startDepth,j.skyLikely,j.surface);
   if(i==0){result.shade=r.shade;result.point=r.point;result.depth=r.depth;result.hit=r.hit;}
@@ -242,7 +242,7 @@ void Renderer::resize(int width,int height){
  presentedReady=false;historyCount=historyCursor=0;cacheReady=false;done=false;index=lane=0;++revision;
 }
 Color shadeCell(const Scene& s,const Rays& r,int x,int y,int b,float eye,int count){
- int red=0,green=0,blue=0;for(int i=0;i<count;++i){float jx=count==1?.5f:(i&1)?.75f:.25f,jy=count<=2?.5f:(i&2)?.75f:.25f;
+ int red=0,green=0,blue=0;for(int i=0;i<count;++i){float jx,jy;samplePattern(i,count,jx,jy);
  Color c=trace(s,r,std::min(W-.5f,x+b*jx),std::min(H-.5f,y+b*jy),eye);red+=c.r;green+=c.g;blue+=c.b;}
  return {uint8_t(red/count),uint8_t(green/count),uint8_t(blue/count)};
 }

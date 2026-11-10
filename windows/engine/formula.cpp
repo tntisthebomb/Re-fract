@@ -18,18 +18,18 @@ bool Stage::compile(std::string& error){
  return true;
 }
 bool Formula::validate(std::string& error){
- if(stages.empty()||stages.size()>MaxStages){error="Use 1 to 12 stages";return false;}
+ if(stages.empty()||stages.size()>MaxStages){error="Use 1 to 32 stages";return false;}
  if(iterations<1||iterations>256||!std::isfinite(bailout)||bailout<2||bailout>1000000||
  !std::isfinite(derivativeScale)||derivativeScale<.001f||derivativeScale>10000||terminal<0||terminal>3||
  !std::isfinite(terminalRadius)||terminalRadius<.000001f||terminalRadius>10000){error="Invalid formula limits";return false;}
  if(!std::isfinite(constant.x)||!std::isfinite(constant.y)||!std::isfinite(constant.z)){error="Invalid Julia constant";return false;}
- auto periodValid=[](float v){return std::isfinite(v)&&(v==0||(v>=.01f&&v<=1000));};
- if(!periodValid(repeatPeriod.x)||!periodValid(repeatPeriod.y)||!periodValid(repeatPeriod.z)){error="Repeat spacing: 0 or 0.01..1000";return false;}
+ auto periodValid=[](float v){return std::isfinite(v)&&(v==0||(v>=.01f&&v<=100000));};
+ if(!periodValid(repeatPeriod.x)||!periodValid(repeatPeriod.y)||!periodValid(repeatPeriod.z)){error="Repeat spacing: 0 or 0.01..100000";return false;}
  bool enabled=false;
  for(Stage& s:stages){enabled|=s.enabled;
   if(int(s.kind)<0||s.kind>=Kind::Count||!std::isfinite(s.a)||!std::isfinite(s.b)||!std::isfinite(s.c)||
     std::fabs(s.a)>10000||std::fabs(s.b)>10000||std::fabs(s.c)>10000){error="Invalid stage parameter";return false;}
-  if(s.kind==Kind::Bulb&&(s.a<1.01f||s.a>32||std::fabs(s.b)>32||std::fabs(s.c)>32)){error="Bulb: power 1.01..32, angles -32..32";return false;}
+  if(s.kind==Kind::Bulb&&(s.a<1.01f||s.a>64||std::fabs(s.b)>32||std::fabs(s.c)>32)){error="Bulb: power 1.01..64, angles -32..32";return false;}
   if(s.kind==Kind::SphereFold&&(s.a<=.000001f||s.b<s.a)){error="Sphere radii: 0 < minimum <= fixed";return false;}
   if(s.kind==Kind::KleinianFold&&(s.a<=0||s.b<=0||s.c<=0)){error="Kleinian fold extents must be positive";return false;}
   if(s.kind==Kind::Inversion&&(s.a<.000001f||s.a>1000)){error="Inversion radius: 0.000001..1000";return false;}

@@ -9,8 +9,14 @@
 namespace rf {
 // Windows port: render resolution is runtime-configurable. Call Renderer::resize() after changing it.
 inline int W=400,H=240;
-constexpr int MaxStages=12,MaxCode=128;
+constexpr int MaxStages=32,MaxCode=128;
 inline float clamp(float x,float a,float b){return std::fmax(a,std::fmin(b,x));}
+// Sub-pixel sample position in [0,1)^2 for sample i of count. count<=4 keeps the original 2x2 grid;
+// larger counts use the R2 low-discrepancy sequence. Shared by the CPU engine and the GPU shader.
+inline void samplePattern(int i,int count,float& jx,float& jy){
+ if(count<=4){jx=count==1?.5f:(i&1)?.75f:.25f;jy=count<=2?.5f:(i&2)?.75f:.25f;return;}
+ float a=.5f+float(i)*.75487767f,b=.5f+float(i)*.56984029f;jx=a-std::floor(a);jy=b-std::floor(b);
+}
 struct Vec {
  float x=0,y=0,z=0;
  Vec()=default; Vec(float X,float Y,float Z):x(X),y(Y),z(Z){}
