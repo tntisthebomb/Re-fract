@@ -17,6 +17,7 @@
 #include <cstring>
 #include <map>
 #include <unordered_map>
+#include <vector>
 
 namespace rf {
 namespace {
@@ -124,6 +125,10 @@ void genStage(std::string& o,const Formula& f,const Stage& s,int i){
    o+="   z=abs(z);sort3(z);\n"
       "   z=z*"+P0+".x-vec3("+P0+".y,"+P0+".y,0.0)*("+P0+".x-1.0);\n"
       "   float cut="+P0+".z*("+P0+".x-1.0);if(z.z>cut*0.5)z.z-=cut;dr*=abs("+P0+".x);\n";break;
+  case Kind::KleinianFold:
+   o+="   vec3 ext=vec3("+P0+".x,"+P0+".y,"+P0+".z);z=2.0*clamp(z,-ext,ext)-z;\n";break;
+  case Kind::Inversion:
+   o+="   float k=max(1.0,"+P1+".x/max(dot(z,z),1e-12));z*=k;dr*=k;\n";break;
   case Kind::Tetra:
    o+="   if(z.x+z.y<0.0){float t=z.x;z.x=-z.y;z.y=-t;}\n"
       "   if(z.x+z.z<0.0){float t=z.x;z.x=-z.z;z.z=-t;}\n"
@@ -145,9 +150,13 @@ std::string generateFragment(const Formula& f){
  o+="layout(location=0) out vec4 outColor;\n";
  // ---- uniforms
  o+="uniform vec2 uRes;uniform vec3 uOrigin,uForward,uRight,uUp,uLight;\n"
-   "uniform float uTangent,uConv,uEye,uFar,uEps,uSafety,uFog,uExposure,uSpecular;\n"
-   "uniform int uSteps,uQuality,uSamples,uAo,uShadow,uIter;\n"
-   "uniform vec3 uGradLo,uGradHi;uniform float uGradScale,uGradOffset;uniform int uGradRepeat;\n"
+   "uniform float uTangent,uConv,uEye,uFar,uEps,uSafety,uFog,uExposure,uSpecular,uSun,uEmission,uRelax;\n"
+   "uniform int uSteps,uQuality,uCount,uPasses,uAo,uShadow,uIter,uBlock,uLens,uVaried,uLinear,uAdaptive;\n"
+   "uniform float uMinEps,uPixTol,uAperture,uFocus;\n"
+   "uniform vec3 uSky;\n"
+   "uniform int uGiSamples,uGiSteps;uniform float uGiStrength,uGiRange;\n"
+   "uniform int uPointMask,uPointShadows;uniform vec3 uPointPos[2],uPointCol[2];uniform float uPointInt[2],uPointRange[2];\n"
+   "uniform vec3 uGradLo,uGradHi,uGradMid[3];uniform float uGradScale,uGradOffset;uniform int uGradRepeat,uGradStops,uGradBounded;\n"
    "uniform float uBail2,uTermR,uDScale;uniform vec3 uJulia,uPeriod;\n";
  o+="uniform vec4 uP0["+N+"],uP1["+N+"],uP2["+N+"];uniform mat3 uRot["+N+"];\n";
  // ---- helpers
@@ -167,6 +176,15 @@ void sort3(inout vec3 z){ // descending
  if(z.x<z.y)z.xy=z.yx;
  if(z.x<z.z)z.xz=z.zx;
  if(z.y<z.z)z.yz=z.zy;
+}
+float radical(uint n,uint base){ // Halton radical inverse, same float recurrence as the CPU
+ float value=0.0,weight=1.0/float(base);
+ while(n!=0u){value+=float(n%base)*weight;n/=base;weight/=float(base);}
+ return value;
+}
+void pattern(int i,int count,out float jx,out float jy){ // rf::samplePattern
+ if(count<=4){jx=count==1?0.5:((i&1)!=0?0.75:0.25);jy=count<=2?0.5:((i&2)!=0?0.75:0.25);}
+ else{jx=fract(0.5+float(i)*0.75487767);jy=fract(0.5+float(i)*0.56984029);}
 }
 #define FAIL {tr=trap;d=0.0;return false;}
 )";
@@ -201,51 +219,157 @@ float repeatBoundaryStep(vec3 point,vec3 dir){
   o+=" {vec3 q=abs(z)-vec3(uTermR);vec3 outside=max(q,0.0);d=(length(outside)+min(max(q.x,max(q.y,q.z)),0.0))/max(dr,1e-12);}\n";
  else if(f.terminal==2)
   o+=" d=(max(max(-z.x-z.y-z.z,-z.x+z.y+z.z),max(z.x-z.y+z.z,z.x+z.y-z.z))-uTermR)*0.57735027/max(dr,1e-12);\n";
+ else if(f.terminal==3)
+  o+=" {float xy=sqrt(z.x*z.x+z.y*z.y);d=max(xy-uTermR,abs(xy*z.z)/max(r,1e-12))/max(dr,1e-12);}\n";
  o+=" d=max(0.0,d)/uDScale;tr=sqrt(trap);\n return fin(d);\n}\n";
- // ---- ray marcher
+ // ---- shading helpers
  o+=R"(
-vec3 gradientColor(float trap){
- float t=trap*uGradScale+uGradOffset;
- t=uGradRepeat!=0?t-floor(t):clamp(t,0.0,1.0);
- return uGradLo*(1.0-t)+uGradHi*t;
-}
 float dist(vec3 p){float d,tr;de(p,d,tr);return d;}
 vec3 unit(vec3 v){float n=length(v);return n>1e-12?v/n:vec3(0.0,0.0,1.0);}
-ivec3 quantize(vec3 v){return ivec3(floor(clamp(v,0.0,1.0)*255.0));}
-const vec3 BG=vec3(0.025,0.028,0.024);
-const ivec3 MAGENTA=ivec3(180,20,90);
-
-// x,y: CPU pixel coordinates (y down, in [0,uRes]).
-ivec3 sampleRay(float x,float y){
+ivec3 quantize(vec3 v){return ivec3(clamp(v,0.0,1.0)*255.0);}
+const vec3 TV[4]=vec3[4](vec3(1.0,-1.0,-1.0),vec3(-1.0,-1.0,1.0),vec3(-1.0,1.0,-1.0),vec3(1.0,1.0,1.0));
+vec3 tetraNormal(vec3 p,float e){ // four DE evaluations, same summation order as the CPU
+ vec3 s=vec3(0.0);
+ for(int k=0;k<4;++k){vec3 v=TV[k];s+=v*dist(p+v*e);}
+ return unit(s);
+}
+vec3 gradientColor(float trap){
+ float inp=uGradBounded!=0?max(trap,0.0)/(1.0+max(trap,0.0)):trap;
+ float t=inp*uGradScale+uGradOffset;
+ t=uGradRepeat!=0?t-floor(t):clamp(t,0.0,1.0);
+ if(uGradStops>2){
+  int count=min(5,uGradStops);float u=t*float(count-1);int index=min(count-2,int(u));float mx=u-float(index);
+  vec3 a=index==0?uGradLo:(index==count-1?uGradHi:uGradMid[index-1]);
+  int j=index+1;
+  vec3 b=j==0?uGradLo:(j==count-1?uGradHi:uGradMid[j-1]);
+  return a*(1.0-mx)+b*mx;
+ }
+ return uGradLo*(1.0-t)+uGradHi*t;
+}
+float hitTol(float t){ // rf::hitTolerance
+ float ceiling=uEps*(uQuality!=0?0.5:1.0)*max(1.0,t*0.2);
+ if(uAdaptive==0)return ceiling;
+ return min(ceiling,max(uMinEps,2.0*t*uTangent/uRes.y*uPixTol));
+}
+)";
+ const std::string stepRepeat=f.repeat?"stride=min(stride,repeatBoundaryStep(q,DIR)+EPS*0.25);\n":"";
+ auto withRepeat=[&](std::string text,const char* dir,const char* eps){
+  std::string line=stepRepeat;
+  for(size_t at;(at=line.find("DIR"))!=std::string::npos;)line.replace(at,3,dir);
+  for(size_t at;(at=line.find("EPS"))!=std::string::npos;)line.replace(at,3,eps);
+  for(size_t at;(at=text.find("@REPEAT@"))!=std::string::npos;)text.replace(at,8,line);
+  return text;
+ };
+ // ---- point lights
+ o+=withRepeat(R"(
+void pointLighting(vec3 position,vec3 normal,float offset,vec3 view,bool highlights,inout vec3 illumination,inout vec3 gloss){
+ for(int i=0;i<2;++i){
+  if((uPointMask&(1<<i))==0)continue;
+  vec3 delta=uPointPos[i]-position;float len=length(delta);
+  if(len>=uPointRange[i]||len<=offset)continue;
+  vec3 direction=delta*(1.0/len);float lambert=max(0.0,dot(normal,direction));
+  float specular=highlights&&uSpecular>0.0?pow(max(0.0,dot(normal,unit(direction-view))),24.0)*uSpecular:0.0;
+  if(lambert==0.0&&specular==0.0)continue;
+  float visibility=1.0;
+  if(uPointShadows!=0&&uShadow>0){
+   float travel=offset*8.0;vec3 start=position+normal*(offset*4.0);
+   for(int k=0;k<uShadow&&travel<len;++k){
+    vec3 q=start+direction*travel;float sd,str;bool ok=de(q,sd,str);
+    if(!ok||sd<offset){visibility=0.0;break;}
+    visibility=min(visibility,12.0*sd/travel);
+    float stride=max(sd*uSafety,offset);
+    @REPEAT@
+    travel+=stride;
+   }
+   if(travel<len)visibility=0.0;
+  }
+  float falloff=1.0-len/uPointRange[i];
+  float power=uPointInt[i]*falloff*falloff/(1.0+len*len)*visibility;
+  illumination+=uPointCol[i]*(lambert*power);gloss+=uPointCol[i]*(specular*power);
+ }
+}
+)","direction","offset");
+ // ---- indirect lighting (GI)
+ o+=withRepeat(R"(
+const vec2 GIOFF[4]=vec2[4](vec2(0.35,0.35),vec2(-0.65,0.25),vec2(0.25,-0.65),vec2(-0.45,-0.45));
+vec3 indirectLight(vec3 p,vec3 n,float e,float x,float y,uint seq){
+ vec3 axis=abs(n.z)<0.9?vec3(0.0,0.0,1.0):vec3(0.0,1.0,0.0);
+ vec3 u=unit(cross(axis,n)),v=cross(n,u),incoming=vec3(0.0);
+ for(int j=0;j<uGiSamples;++j){
+  float a=GIOFF[j&3].x,b=GIOFF[j&3].y;
+  if(uVaried!=0||uGiSamples>4){
+   uint index=seq*uint(uGiSamples)+uint(j)+1u;
+   uint hash=uint(x)*1973u+uint(y)*9277u;
+   float radius=sqrt(radical(index,2u)),angle=6.2831853*mod(radical(index,3u)+float(hash&65535u)/65536.0,1.0);
+   a=radius*cos(angle);b=radius*sin(angle);
+  }
+  vec3 direction=u*a+v*b+n*sqrt(max(0.0,1.0-a*a-b*b));
+  vec3 start=p+n*(e*4.0);float travel=e*4.0;bool bounced=false,valid=true;
+  for(int k=0;k<uGiSteps&&travel<uGiRange;++k){
+   vec3 q=start+direction*travel;float d,tr;
+   if(!de(q,d,tr)){valid=false;break;}
+   if(d<e){
+    vec3 bn=tetraNormal(q,e);
+    vec3 bounce=gradientColor(tr),local=vec3(0.0),unused=vec3(0.0);
+    if(uPointMask!=0)pointLighting(q,bn,e,direction,false,local,unused);
+    incoming+=bounce*(0.15+0.85*max(0.0,dot(bn,uLight))*uSun+uEmission)+bounce*local;
+    bounced=true;break;
+   }
+   float stride=max(d*uSafety,e);
+   @REPEAT@
+   travel+=stride;
+  }
+  // Exhausted rays are treated as occluded, rather than leaking skylight.
+  if(valid&&!bounced&&travel>=uGiRange)incoming+=uSky*(0.5+0.5*max(0.0,direction.y));
+ }
+ return incoming*(uGiStrength/float(uGiSamples));
+}
+)","direction","e");
+ // ---- ray marcher
+ o+=R"(
+// x,y: CPU pixel coordinates (y down). Returns linear radiance; mg flags the invalid-sample colour.
+vec3 sampleRay(float x,float y,uint seq,out bool mg){
+ mg=false;
  float aspect=uRes.x/uRes.y;
  float px=(2.0*x/uRes.x-1.0)*uTangent*aspect-uEye/uConv;
  float py=(1.0-2.0*y/uRes.y)*uTangent;
- vec3 dir=unit(uForward+uRight*px+uUp*py);
- vec3 origin=uOrigin;
+ vec3 origin=uOrigin,dir=unit(uForward+uRight*px+uUp*py);
+ if(uLens!=0){ // thin lens, Halton samples keyed by sequence
+  float radius=sqrt(radical(seq+1u,2u)),angle=6.2831853*radical(seq+1u,3u);
+  vec3 focus=origin+dir*(uFocus/max(1e-6,dot(dir,uForward)));
+  origin+=(uRight*(radius*cos(angle))+uUp*(radius*sin(angle)))*uAperture;
+  dir=unit(focus-origin);
+ }
  float t=0.0,trap=0.0,d,tr;bool hit=false;
- float epsScale=uQuality!=0?0.5:1.0;
+ float previousT=0.0,previousD=0.0,advance=0.0;bool relaxed=false;
  for(int i=0;i<uSteps;++i){
   if(!(t<uFar))break;
   vec3 pt=origin+dir*t;
-  if(!de(pt,d,tr))return MAGENTA;
-  float eps=uEps*epsScale*max(1.0,t*0.2);
+  if(!de(pt,d,tr)){mg=true;return vec3(0.0);}
+  if(relaxed&&previousD+d<advance){
+   t=previousT+max(previousD*uSafety,uEps*0.25);pt=origin+dir*t;
+   if(!de(pt,d,tr)){mg=true;return vec3(0.0);}
+   relaxed=false;
+  }
+  float eps=hitTol(t);
   if(d<eps){hit=true;trap=tr;break;}
-  float advance=max(d*uSafety,eps*0.25);
+  previousT=t;previousD=d;advance=max(d*uSafety,eps*0.25);
+  relaxed=uRelax>1.0;if(relaxed)advance*=uRelax;
 )";
  if(f.repeat)o+="  advance=min(advance,repeatBoundaryStep(pt,dir)+eps*0.25);\n";
  o+=R"(  t+=advance;
  }
- if(!hit)return quantize(BG+vec3(0.018,0.012,0.006)*(1.0-y/uRes.y));
+ if(!hit)return uSky*uExposure;
  vec3 p=origin+dir*t;
  de(p,d,trap);
- float e=max(uEps,t*uEps*0.25);
- // Tetrahedral normal
- vec3 v1=vec3(1.0,-1.0,-1.0),v2=vec3(-1.0,-1.0,1.0),v3=vec3(-1.0,1.0,-1.0),v4=vec3(1.0,1.0,1.0);
- vec3 n=unit(v1*dist(p+v1*e)+v2*dist(p+v2*e)+v3*dist(p+v3*e)+v4*dist(p+v4*e));
+ float e=uAdaptive!=0?hitTol(t):max(uEps,t*uEps*0.25);
+ // At large coordinates, a sub-ULP normal offset would sample the same point.
+ if(uAdaptive!=0)e=max(e,4.0*1.1920929e-7*max(1.0,max(abs(p.x),max(abs(p.y),abs(p.z)))));
+ vec3 n=tetraNormal(p,e);
  float diffuse=max(0.0,dot(n,uLight)),ao=1.0,shadow=1.0;
- float baseSpec=uSpecular>0.0?pow(max(0.0,dot(n,unit(uLight-dir))),24.0)*uSpecular:0.0;
+ float baseSpec=(uSpecular>0.0&&uSun>0.0)?pow(max(0.0,dot(n,unit(uLight-dir))),24.0)*uSpecular:0.0;
  for(int i=1;i<=uAo&&ao>0.15;++i){float h=e*6.0*float(i);ao-=max(0.0,h-dist(p+n*h))/h*(0.35/float(i));}
- if(uShadow!=0&&(diffuse>0.0||baseSpec>0.0)){
+ if(uSun>0.0&&uShadow!=0&&(diffuse>0.0||baseSpec>0.0)){
   float st=e*8.0;vec3 start=p+n*(e*4.0);
   for(int i=0;i<uShadow&&st<8.0;++i){
    float sd,str;bool ok=de(start+uLight*st,sd,str);
@@ -253,24 +377,35 @@ ivec3 sampleRay(float x,float y){
    shadow=min(shadow,12.0*sd/st);st+=max(sd*uSafety,e);
   }
  }
- float spec=baseSpec*shadow;
- float lighting=clamp(ao,0.15,1.0)*(0.22+0.78*diffuse*clamp(shadow,0.15,1.0));
- vec3 color=gradientColor(trap)*lighting+vec3(spec);
+ float spec=baseSpec*shadow*uSun;
+ float lighting=clamp(ao,0.15,1.0)*(0.22+0.78*diffuse*clamp(shadow,0.15,1.0)*uSun);
+ vec3 localD=vec3(0.0),localS=vec3(0.0);
+ if(uPointMask!=0)pointLighting(p,n,e,dir,true,localD,localS);
+ vec3 albedo=gradientColor(trap);
+ vec3 color=albedo*(lighting+uEmission)+vec3(spec);
+ if(uPointMask!=0)color+=albedo*localD+localS;
+ if(uGiSamples>0&&uGiStrength>0.0)color+=albedo*indirectLight(p,n,e,x,y,seq);
  float fog=exp(-t*uFog);
- color=(color*fog+BG*(1.0-fog))*uExposure;
- return quantize(color);
+ return (color*fog+uSky*(1.0-fog))*uExposure;
 }
 
 void main(){
  // GL row r (bottom-up) -> CPU row uRes.y-1-r (top-down); see file header.
  float xl=floor(gl_FragCoord.x),rowTop=uRes.y-1.0-floor(gl_FragCoord.y);
- int count=uQuality!=0?max(uSamples,1):1;
- ivec3 sum=ivec3(0);
- for(int i=0;i<count;++i){
-  float jx=count==1?0.5:((i&1)!=0?0.75:0.25),jy=count<=2?0.5:((i&2)!=0?0.75:0.25);
-  sum+=sampleRay(xl+jx,rowTop+jy);
+ float B=float(uBlock);
+ xl=floor(xl/B)*B;rowTop=floor(rowTop/B)*B; // coarse final render: one ray per block cell
+ ivec3 intSum=ivec3(0);vec3 radSum=vec3(0.0);
+ for(int ps=0;ps<uPasses;++ps){
+  for(int i=0;i<uCount;++i){
+   float jx,jy;pattern(i,uCount,jx,jy);
+   bool mg;
+   vec3 rad=sampleRay(min(uRes.x-0.5,xl+B*jx),min(uRes.y-0.5,rowTop+B*jy),uint(ps*uCount+i),mg);
+   if(mg){intSum+=ivec3(180,20,90);radSum+=vec3(180.0,20.0,90.0)*(1.0/255.0);}
+   else{intSum+=quantize(rad);radSum+=rad;}
+  }
  }
- outColor=vec4(vec3(sum/count)/255.0,1.0);
+ ivec3 q=uLinear!=0?quantize(radSum*(1.0/float(uCount*uPasses))):intSum/uCount;
+ outColor=vec4(vec3(q)/255.0,1.0);
 }
 )";
  return o;
@@ -312,17 +447,53 @@ using Clock=std::chrono::steady_clock;
 
 // ---------------------------------------------------------------- 3. GpuRenderer
 
+#ifndef GL_RGBA16F
+#define GL_RGBA16F 0x881A
+#endif
+#ifndef GL_HALF_FLOAT
+#define GL_HALF_FLOAT 0x140B
+#endif
+
+namespace {
+// Bloom post-process, mirrors Renderer::applyBloom: 13-tap separable box blur of the bright-pass.
+const char* kBloomFragment=R"(#version 330 core
+layout(location=0) out vec4 outColor;
+uniform sampler2D uSrc;uniform sampler2D uBase;uniform vec2 uSizeF;uniform float uBloom;uniform int uVertical;
+vec3 bright(vec3 v){float peak=max(v.x,max(v.y,v.z));return v*(peak>0.6?(peak-0.6)/peak:0.0);}
+void main(){
+ ivec2 p=ivec2(gl_FragCoord.xy);ivec2 uSize=ivec2(uSizeF);
+ vec3 s=vec3(0.0);
+ if(uVertical==0){
+  for(int dx=-6;dx<=6;++dx)s+=bright(texelFetch(uSrc,ivec2(clamp(p.x+dx,0,uSize.x-1),p.y),0).rgb);
+  outColor=vec4(s*(1.0/13.0),1.0);
+ }else{
+  for(int dy=-6;dy<=6;++dy)s+=texelFetch(uSrc,ivec2(p.x,clamp(p.y+dy,0,uSize.y-1)),0).rgb;
+  vec3 v=texelFetch(uBase,p,0).rgb+s*(uBloom/13.0);
+  outColor=vec4(vec3(ivec3(clamp(v,0.0,1.0)*255.0))/255.0,1.0);
+ }
+}
+)";
+bool progressiveActive(const Settings& s){return s.progressiveLighting&&((s.giSamples>0&&s.giStrength>0)||(s.dof&&s.aperture>0));}
+bool separateActive(const Settings& s){return s.separateLighting&&!s.quality&&!(s.dof&&s.aperture>0)&&s.giSamples>0&&s.giStrength>0;}
+// Cell size of the finished CPU image (the progressive refinement ends at this block).
+int finalBlock(const Settings& s){return s.quality?1:std::max(1,s.autoRefine?s.stillBlock:std::max(s.previewBlock,s.stillBlock));}
+}
+
 struct GpuRenderer::Impl {
  std::map<std::string,Program> programs; // keyed by generated fragment source
  Program* current=nullptr;
+ Program bloomProgram;
  GLuint vao=0;
- GLuint tex[2]={0,0},fbo[2]={0,0};
+ GLuint tex[2]={0,0},fbo[2]={0,0};       // presented image per eye
+ GLuint baseTex[2]={0,0},baseFbo[2]={0,0}; // scene render target while bloom is on
+ GLuint tmpTex=0,tmpFbo=0;                // bloom horizontal pass (RGBA16F)
  int width=0,height=0;
  int eyeCount=1;float eyeOffset=0;
  bool active=false;
+ bool bloomOn=false,bloomDone[2]={false,false};
  int renderW=0,renderH=0;      // region of the image being / last rendered
- int rowsDone[2]={0,0};
- double msPerRow=0;int lastRows=2;
+ int rowsDone[2]={0,0},colsDone[2]={0,0};
+ double msPerPixel=0;int lastPixels=64;
  std::string renderer;
  bool inited=false;
 
@@ -330,13 +501,69 @@ struct GpuRenderer::Impl {
   for(int e=0;e<2;++e){
    if(fbo[e]){glDeleteFramebuffers(1,&fbo[e]);fbo[e]=0;}
    if(tex[e]){glDeleteTextures(1,&tex[e]);tex[e]=0;}
+   if(baseFbo[e]){glDeleteFramebuffers(1,&baseFbo[e]);baseFbo[e]=0;}
+   if(baseTex[e]){glDeleteTextures(1,&baseTex[e]);baseTex[e]=0;}
   }
+  if(tmpFbo){glDeleteFramebuffers(1,&tmpFbo);tmpFbo=0;}
+  if(tmpTex){glDeleteTextures(1,&tmpTex);tmpTex=0;}
  }
+ bool makeTarget(GLuint& t,GLuint& fb,GLenum internal,GLenum type,GLenum filter){
+  glGenTextures(1,&t);glBindTexture(GL_TEXTURE_2D,t);
+  glTexImage2D(GL_TEXTURE_2D,0,GLint(internal),width,height,0,GL_RGBA,type,nullptr);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GLint(filter));
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GLint(filter));
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+  glGenFramebuffers(1,&fb);glBindFramebuffer(GL_FRAMEBUFFER,fb);
+  glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,t,0);
+  bool ok=glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE;
+  glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
+  return ok;
+ }
+ // Scene target of an eye: the bloom base while bloom is pending, the presented image otherwise.
+ GLuint sceneFbo(int e)const{return bloomOn?baseFbo[e]:fbo[e];}
+ GLuint shownTex(int e)const{return bloomOn&&!bloomDone[e]?baseTex[e]:tex[e];}
+ GLuint shownFbo(int e)const{return bloomOn&&!bloomDone[e]?baseFbo[e]:fbo[e];}
+ bool ensureBloom(std::string& error){
+  if(!baseTex[0]){
+   for(int e=0;e<2;++e)if(!makeTarget(baseTex[e],baseFbo[e],GL_RGBA8,GL_UNSIGNED_BYTE,GL_LINEAR)){error="bloom targets";return false;}
+   if(!makeTarget(tmpTex,tmpFbo,GL_RGBA16F,GL_HALF_FLOAT,GL_NEAREST)){error="bloom targets";return false;}
+   glBindFramebuffer(GL_FRAMEBUFFER,0);glBindTexture(GL_TEXTURE_2D,0);
+  }
+  if(!bloomProgram.id&&!build(bloomProgram,kBloomFragment,error))return false;
+  return true;
+ }
+ void applyBloom(int e,float strength);
  void setUniforms(const Scene& scene,int rw,int rh);
 };
 
 GpuRenderer::GpuRenderer(){impl=new Impl;}
 GpuRenderer::~GpuRenderer(){delete impl;}
+
+bool GpuRenderer::supports(const Scene& scene,std::string& reason){
+ const Formula& f=scene.formula;const Settings& o=scene.settings;
+ auto no=[&](const char* why){reason=why;return false;};
+ if(f.activeCount<1||f.activeCount>MaxStages)return no("formula has no valid active stage list");
+ if(f.iterations<1||f.iterations>256)return no("iterations outside 1..256");
+ if(!(f.bailout<=1e6f))return no("bailout above 1e6");
+ if(!(o.farClip<=1e5f))return no("far clip above 1e5");
+ int exprCode=0;
+ for(int i=0;i<f.activeCount;++i){const Stage& st=f.stages[f.active[i]];
+  if(int(st.kind)<0||st.kind>=Kind::Count)return no("unknown stage kind");
+  if(st.kind==Kind::Expression)for(int j=0;j<3;++j){exprCode+=st.expr[j].count;if(st.expr[j].stack>32)return no("expression stack above 32");}
+ }
+ if(exprCode>1200)return no("expression stages too large for the shader generator");
+ if(o.steps>4096)return no("more than 4096 march steps");
+ if(o.ao>32)return no("more than 32 AO samples");
+ if(o.shadow>512)return no("more than 512 shadow steps");
+ if(o.quality&&o.samples>16)return no("more than 16 supersamples");
+ if(o.dof&&o.aperture>0&&o.dofSamples>64)return no("more than 64 depth-of-field samples");
+ if(o.giSamples>64)return no("more than 64 GI samples");
+ if(o.giSamples>0&&o.giSteps>1024)return no("more than 1024 GI steps");
+ if(progressiveActive(o)&&o.lightingPasses>256)return no("more than 256 progressive lighting passes");
+ if(o.upscale!=0&&finalBlock(o)>1)return no("upscale filter on a coarse final render");
+ reason.clear();return true;
+}
 
 bool GpuRenderer::init(std::string& error){
  if(impl->inited)return true;
@@ -352,6 +579,8 @@ void GpuRenderer::shutdown(){
  impl->destroyTargets();
  for(auto& kv:impl->programs)if(kv.second.id)glDeleteProgram(kv.second.id);
  impl->programs.clear();impl->current=nullptr;
+ if(impl->bloomProgram.id)glDeleteProgram(impl->bloomProgram.id);
+ impl->bloomProgram=Program();
  if(impl->vao)glDeleteVertexArrays(1,&impl->vao);
  impl->vao=0;impl->width=impl->height=0;impl->active=false;impl->inited=false;
 }
@@ -360,21 +589,13 @@ bool GpuRenderer::resize(int w,int h){
  if(w<1||h<1)return false;
  if(w==impl->width&&h==impl->height&&impl->tex[0])return true;
  impl->destroyTargets();
+ impl->width=w;impl->height=h;
  for(int e=0;e<2;++e){
-  glGenTextures(1,&impl->tex[e]);glBindTexture(GL_TEXTURE_2D,impl->tex[e]);
-  glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
-  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
-  glGenFramebuffers(1,&impl->fbo[e]);glBindFramebuffer(GL_FRAMEBUFFER,impl->fbo[e]);
-  glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,impl->tex[e],0);
-  bool ok=glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE;
-  glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
-  if(!ok){glBindFramebuffer(GL_FRAMEBUFFER,0);impl->destroyTargets();impl->width=impl->height=0;return false;}
+  if(!impl->makeTarget(impl->tex[e],impl->fbo[e],GL_RGBA8,GL_UNSIGNED_BYTE,GL_LINEAR)){
+   glBindFramebuffer(GL_FRAMEBUFFER,0);impl->destroyTargets();impl->width=impl->height=0;return false;}
  }
  glBindFramebuffer(GL_FRAMEBUFFER,0);glBindTexture(GL_TEXTURE_2D,0);
- impl->width=w;impl->height=h;impl->active=false;
+ impl->active=false;
  return true;
 }
 
@@ -382,6 +603,7 @@ bool GpuRenderer::begin(const Scene& scene,float eyeOffset,std::string& error){
  Impl& m=*impl;m.active=false;
  const Formula& f=scene.formula;
  if(f.activeCount<1||f.activeCount>MaxStages){error="formula has no active stages (call Formula::validate)";return false;}
+ if(m.width<1){error="resize() has not been called";return false;}
  std::string src=generateFragment(f);
  auto it=m.programs.find(src);
  if(it==m.programs.end()){
@@ -390,14 +612,20 @@ bool GpuRenderer::begin(const Scene& scene,float eyeOffset,std::string& error){
   while(m.programs.size()>=6){auto victim=m.programs.begin();if(&victim->second==m.current)++victim;
    if(victim==m.programs.end())break;glDeleteProgram(victim->second.id);m.programs.erase(victim);}
   it=m.programs.emplace(src,std::move(prog)).first;
-  m.msPerRow=0;m.lastRows=2; // new shader: re-measure cost
+  m.msPerPixel=0;m.lastPixels=64; // new shader: re-measure cost
+  // Warm-up draw (all loop counts are still 0): moves driver-side compilation out of the timed strips.
+  glUseProgram(it->second.id);glBindVertexArray(m.vao);glBindFramebuffer(GL_FRAMEBUFFER,m.fbo[0]);
+  glViewport(0,0,m.width,m.height);glEnable(GL_SCISSOR_TEST);glScissor(0,0,1,1);
+  glDrawArrays(GL_TRIANGLES,0,3);glFinish();glDisable(GL_SCISSOR_TEST);
+  glBindFramebuffer(GL_FRAMEBUFFER,0);glBindVertexArray(0);glUseProgram(0);
  }
  m.current=&it->second;
+ m.bloomOn=scene.settings.bloom>0;
+ if(m.bloomOn&&!m.ensureBloom(error)){m.bloomOn=false;return false;}
  m.eyeOffset=eyeOffset;m.eyeCount=eyeOffset==0?1:2;
- m.rowsDone[0]=m.rowsDone[1]=0;
+ m.rowsDone[0]=m.rowsDone[1]=0;m.colsDone[0]=m.colsDone[1]=0;m.bloomDone[0]=m.bloomDone[1]=false;
  m.renderW=m.renderH=0;
- m.active=m.width>0;
- if(!m.active){error="resize() has not been called";return false;}
+ m.active=true;
  return true;
 }
 
@@ -411,9 +639,31 @@ void GpuRenderer::Impl::setUniforms(const Scene& scene,int rw,int rh){
  u3f("uForward",rays.forward);u3f("uRight",rays.right);u3f("uUp",rays.up);u3f("uLight",rays.light);
  u1f("uTangent",rays.tangent);u1f("uConv",o.convergence);
  u1f("uFar",o.farClip);u1f("uEps",o.epsilon);u1f("uSafety",o.safety);u1f("uFog",o.fog);
- u1f("uExposure",o.exposure);u1f("uSpecular",o.specular);
- u1i("uQuality",o.quality?1:0);u1i("uSteps",o.quality?std::min(512,o.steps*2):o.steps);
- u1i("uSamples",std::max(1,std::min(o.samples,8)));u1i("uAo",std::max(0,o.ao));u1i("uShadow",std::max(0,o.shadow));
+ u1f("uExposure",o.exposure);u1f("uSpecular",o.specular);u1f("uSun",o.sunStrength);u1f("uEmission",o.emission);
+ u1f("uRelax",(!o.quality&&!f.repeat&&o.relaxation>1)?o.relaxation:1.f);
+ u1i("uQuality",o.quality?1:0);u1i("uSteps",o.quality?std::min(8192,o.steps*2):o.steps);
+ u1i("uAo",std::max(0,o.ao));u1i("uShadow",std::max(0,o.shadow));
+ u1i("uAdaptive",o.adaptivePrecision?1:0);u1f("uMinEps",o.minEpsilon);u1f("uPixTol",o.pixelTolerance);
+ u3f("uSky",o.skyColor);
+ // Sampling plan, mirroring renderJob() for a finished image.
+ bool lens=o.dof&&o.aperture>0,prog=progressiveActive(o),split=separateActive(o);
+ int count=o.quality?std::max(1,std::min(o.samples,16)):1;
+ if(lens)count=std::max(count,std::max(1,std::min(o.dofSamples,64)));
+ bool accumulate=prog&&!split;
+ u1i("uCount",count);u1i("uLens",lens?1:0);u1f("uAperture",o.aperture);u1f("uFocus",o.focusDistance);
+ u1i("uVaried",(lens||accumulate||split)?1:0);u1i("uLinear",(lens||accumulate)?1:0);
+ u1i("uPasses",(accumulate||split)&&prog?std::max(1,std::min(o.lightingPasses,256)):1);
+ u1i("uBlock",finalBlock(o));
+ u1i("uGiSamples",std::max(0,std::min(o.giSamples,64)));u1i("uGiSteps",std::max(0,std::min(o.giSteps,1024)));
+ u1f("uGiStrength",o.giStrength);u1f("uGiRange",o.giRange);
+ // point lights
+ float pos[6],col[6],inten[2],range[2];
+ for(int i=0;i<2;++i){const PointLight& l=o.pointLights[i];Vec q=rays.pointPositions[i];
+  pos[i*3]=q.x;pos[i*3+1]=q.y;pos[i*3+2]=q.z;col[i*3]=l.color.x;col[i*3+1]=l.color.y;col[i*3+2]=l.color.z;
+  inten[i]=l.intensity;range[i]=l.range;}
+ u1i("uPointMask",rays.pointMask);u1i("uPointShadows",o.pointShadows?1:0);
+ glUniform3fv(p.loc("uPointPos"),2,pos);glUniform3fv(p.loc("uPointCol"),2,col);
+ glUniform1fv(p.loc("uPointInt"),2,inten);glUniform1fv(p.loc("uPointRange"),2,range);
  // palette: same selection as gradientColor()
  Vec lo=o.gradientLow,hi=o.gradientHigh;
  if(!o.customGradient){int n=int(o.palette)%4;
@@ -422,8 +672,12 @@ void GpuRenderer::Impl::setUniforms(const Scene& scene,int rw,int rh){
   else if(n==3){lo={.18f,.19f,.17f};hi={.85f,.86f,.73f};}
   else{lo={.18f,.06f,.025f};hi={.95f,.58f,.22f};}
  }
- u3f("uGradLo",lo);u3f("uGradHi",hi);u1f("uGradScale",o.gradientScale);u1f("uGradOffset",o.gradientOffset);
- u1i("uGradRepeat",o.gradientRepeat?1:0);
+ float mid[9];for(int i=0;i<3;++i){mid[i*3]=o.gradientMiddle[i].x;mid[i*3+1]=o.gradientMiddle[i].y;mid[i*3+2]=o.gradientMiddle[i].z;}
+ u3f("uGradLo",lo);u3f("uGradHi",hi);glUniform3fv(p.loc("uGradMid"),3,mid);
+ u1f("uGradScale",o.gradientScale);u1f("uGradOffset",o.gradientOffset);
+ u1i("uGradRepeat",o.gradientRepeat?1:0);u1i("uGradBounded",o.boundedGradient?1:0);
+ u1i("uGradStops",o.customGradient&&o.gradientStops>2?std::min(5,o.gradientStops):2);
+ // The caller supplies the iteration count to render with (see renderingIterations()).
  u1i("uIter",f.iterations);u1f("uBail2",f.bailout*f.bailout);u1f("uTermR",f.terminalRadius);u1f("uDScale",f.derivativeScale);
  u3f("uJulia",f.constant);u3f("uPeriod",f.repeatPeriod);
  // per-stage parameters, indexed by position in the active-stage list
@@ -439,22 +693,42 @@ void GpuRenderer::Impl::setUniforms(const Scene& scene,int rw,int rh){
  glUniformMatrix3fv(p.loc("uRot"),n,GL_TRUE,rot.data()); // rotation is row-major
 }
 
+void GpuRenderer::Impl::applyBloom(int e,float strength){
+ glUseProgram(bloomProgram.id);glBindVertexArray(vao);
+ glViewport(0,0,width,height);glEnable(GL_SCISSOR_TEST);glScissor(0,0,renderW,renderH);
+ glUniform2f(bloomProgram.loc("uSizeF"),float(renderW),float(renderH));glUniform1f(bloomProgram.loc("uBloom"),strength);
+ glUniform1i(bloomProgram.loc("uSrc"),0);glUniform1i(bloomProgram.loc("uBase"),1);
+ glActiveTexture(GL_TEXTURE0+1);glBindTexture(GL_TEXTURE_2D,baseTex[e]);
+ glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,baseTex[e]);
+ glUniform1i(bloomProgram.loc("uVertical"),0);
+ glBindFramebuffer(GL_FRAMEBUFFER,tmpFbo);glDrawArrays(GL_TRIANGLES,0,3);
+ glBindTexture(GL_TEXTURE_2D,tmpTex);
+ glUniform1i(bloomProgram.loc("uVertical"),1);
+ glBindFramebuffer(GL_FRAMEBUFFER,fbo[e]);glDrawArrays(GL_TRIANGLES,0,3);
+ glFinish();
+ glBindTexture(GL_TEXTURE_2D,0);glActiveTexture(GL_TEXTURE0+1);glBindTexture(GL_TEXTURE_2D,0);glActiveTexture(GL_TEXTURE0);
+ glDisable(GL_SCISSOR_TEST);glBindFramebuffer(GL_FRAMEBUFFER,0);glBindVertexArray(0);glUseProgram(0);
+ bloomDone[e]=true;
+}
+
 bool GpuRenderer::render(const Scene& scene,int renderW,int renderH,float budgetMs){
  Impl& m=*impl;
  if(!m.active||!m.current)return true;
  renderW=std::max(1,std::min(renderW,m.width));renderH=std::max(1,std::min(renderH,m.height));
  if(m.renderW!=renderW||m.renderH!=renderH){ // region changed mid-image: restart it
-  m.renderW=renderW;m.renderH=renderH;m.rowsDone[0]=m.rowsDone[1]=0;}
+  m.renderW=renderW;m.renderH=renderH;m.rowsDone[0]=m.rowsDone[1]=0;m.colsDone[0]=m.colsDone[1]=0;
+  m.bloomDone[0]=m.bloomDone[1]=false;}
  auto t0=Clock::now();
  glUseProgram(m.current->id);glBindVertexArray(m.vao);
  glDisable(GL_DEPTH_TEST);glDisable(GL_BLEND);glDisable(GL_CULL_FACE);glEnable(GL_SCISSOR_TEST);
  glViewport(0,0,m.width,m.height);
  m.setUniforms(scene,renderW,renderH);
  Rays rays(scene);
- const double target=std::max(2.0,std::min(25.0,double(budgetMs)));
+ // Each draw call is sized to ~target ms (rows when cheap, pixel runs of one row when a single row is too slow).
+ const double target=std::max(2.0,std::min(12.0,double(budgetMs)));
  bool complete=true;
  for(int e=0;e<m.eyeCount;++e){
-  glBindFramebuffer(GL_FRAMEBUFFER,m.fbo[e]);
+  glBindFramebuffer(GL_FRAMEBUFFER,m.sceneFbo(e));
   float eye=m.eyeCount==1?0.f:(e?m.eyeOffset:-m.eyeOffset);
   Vec origin=scene.camera.position+rays.right*eye;
   glUniform1f(m.current->loc("uEye"),eye);
@@ -462,34 +736,45 @@ bool GpuRenderer::render(const Scene& scene,int renderW,int renderH,float budget
   while(m.rowsDone[e]<renderH){
    double elapsed=std::chrono::duration<double,std::milli>(Clock::now()-t0).count();
    if(elapsed>=budgetMs){complete=false;break;}
-   int rows=m.msPerRow>0?int(target/m.msPerRow):m.lastRows;
-   rows=std::max(1,std::min({rows,m.lastRows*2,renderH-m.rowsDone[e]}));
-   glScissor(0,m.rowsDone[e],renderW,rows);
+   double wanted=m.msPerPixel>0?target/m.msPerPixel:double(m.lastPixels);
+   int budget=int(std::max(1.0,std::min({wanted,double(m.lastPixels)*2.0,double(renderW)*renderH})));
+   int x0=m.colsDone[e],y0=m.rowsDone[e],w,rows;
+   if(x0==0&&budget>=renderW){w=renderW;rows=std::max(1,std::min(budget/renderW,renderH-y0));}
+   else{w=std::min(renderW-x0,budget);rows=1;}
+   glScissor(x0,y0,w,rows);
    auto s0=Clock::now();
    glDrawArrays(GL_TRIANGLES,0,3);glFinish();
    double ms=std::chrono::duration<double,std::milli>(Clock::now()-s0).count();
-   double per=ms/rows;
-   m.msPerRow=m.msPerRow>0?std::max(per,m.msPerRow*0.8):per; // react fast to slowdowns, relax slowly
-   m.lastRows=rows;m.rowsDone[e]+=rows;
+   int pixels=w*rows;double per=ms/pixels;
+   m.msPerPixel=m.msPerPixel>0?std::max(per,m.msPerPixel*0.8):per; // react fast to slowdowns, relax slowly
+   m.lastPixels=pixels;
+   if(x0+w>=renderW){m.colsDone[e]=0;m.rowsDone[e]+=rows;}else m.colsDone[e]=x0+w;
   }
-  if(m.rowsDone[e]<renderH)complete=false;
-  if(!complete)break;
+  if(m.rowsDone[e]<renderH){complete=false;break;}
+  if(m.bloomOn&&!m.bloomDone[e]){
+   glDisable(GL_SCISSOR_TEST);
+   m.applyBloom(e,scene.settings.bloom);
+   // restore state for the next eye
+   glUseProgram(m.current->id);glBindVertexArray(m.vao);glEnable(GL_SCISSOR_TEST);glViewport(0,0,m.width,m.height);
+   glBindFramebuffer(GL_FRAMEBUFFER,m.sceneFbo(e));
+  }
  }
  glDisable(GL_SCISSOR_TEST);glBindFramebuffer(GL_FRAMEBUFFER,0);glBindVertexArray(0);glUseProgram(0);
  return complete;
 }
 
 int GpuRenderer::eyes() const{return impl->eyeCount;}
-unsigned GpuRenderer::texture(int eye) const{return impl->tex[impl->eyeCount==1?0:std::max(0,std::min(1,eye))];}
+unsigned GpuRenderer::texture(int eye) const{return impl->shownTex(impl->eyeCount==1?0:std::max(0,std::min(1,eye)));}
 const char* GpuRenderer::rendererName() const{return impl->renderer.c_str();}
 
 bool GpuRenderer::readback(int eye,std::vector<Color>& out,int& width,int& height){
  Impl& m=*impl;
  int e=m.eyeCount==1?0:std::max(0,std::min(1,eye));
  int w=m.renderW?m.renderW:m.width,h=m.renderH?m.renderH:m.height;
- if(!m.fbo[e]||w<1||h<1)return false;
+ GLuint fb=m.shownFbo(e);
+ if(!fb||w<1||h<1)return false;
  std::vector<uint8_t> raw(size_t(w)*h*4);
- glFinish();glBindFramebuffer(GL_FRAMEBUFFER,m.fbo[e]);glPixelStorei(GL_PACK_ALIGNMENT,1);
+ glFinish();glBindFramebuffer(GL_FRAMEBUFFER,fb);glPixelStorei(GL_PACK_ALIGNMENT,1);
  glReadPixels(0,0,w,h,GL_RGBA,GL_UNSIGNED_BYTE,raw.data());
  glBindFramebuffer(GL_FRAMEBUFFER,0);
  out.resize(size_t(w)*h);

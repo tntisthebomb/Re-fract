@@ -30,6 +30,10 @@ Bytes mpf(bool primary,uint32_t firstSize,uint32_t secondSize){
 bool write(const Bytes& bytes,const std::string& path,std::string& error){std::ofstream out(path+".tmp",std::ios::binary);if(!out){error="Cannot write screenshot";return false;}out.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());out.close();if(!out){std::remove((path+".tmp").c_str());error="Screenshot write failed";return false;}if(std::rename((path+".tmp").c_str(),path.c_str())!=0){std::remove((path+".tmp").c_str());error="Cannot finish screenshot";return false;}error="SCREENSHOT SAVED";return true;}
 }
 bool saveJPEG(const std::vector<Color>& pixels,int width,int height,const std::string& path,std::string& error){Bytes bytes;if(!jpeg(pixels,width,height,bytes)){error="JPEG encoding failed";return false;}return write(bytes,path,error);}
+bool savePNG(const std::vector<Color>& pixels,int width,int height,const std::string& path,std::string& error){
+ Bytes bytes;if(width<=0||height<=0||width>65536||height>65536||pixels.size()!=size_t(width)*height||!stbi_write_png_to_func(encoded,&bytes,width,height,3,pixels.data(),width*3)){error="PNG encoding failed";return false;}
+ return write(bytes,path,error);
+}
 bool saveMPO(const std::vector<Color>& left,const std::vector<Color>& right,const std::string& path,std::string& error){
  Bytes a,b;if(!jpeg(left,W,H,a)||!jpeg(right,W,H,b)){error="Stereo JPEG encoding failed";return false;}
  auto first=mpf(true,0,0),second=mpf(false,0,0);first=mpf(true,uint32_t(a.size()+first.size()),uint32_t(b.size()+second.size()));

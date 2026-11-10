@@ -31,7 +31,7 @@ find_package(Threads REQUIRED)
 find_package(OpenGL REQUIRED)
 
 set(RF_SOURCES src/main.cpp src/gl_loader.cpp
-  engine/expression.cpp engine/formula.cpp engine/renderer.cpp engine/storage.cpp engine/surface.cpp engine/ui.cpp)
+  engine/expression.cpp engine/formula.cpp engine/renderer.cpp engine/storage.cpp engine/surface.cpp engine/ui.cpp engine/upscale.cpp engine/screenshot.cpp)
 # The GPU ray-marcher is compiled in when present; otherwise the CPU backend is the only one.
 set(RF_GPU_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_renderer.cpp" CACHE FILEPATH "GPU renderer source")
 if(EXISTS "${RF_GPU_SOURCE}")

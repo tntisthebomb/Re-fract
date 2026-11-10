@@ -19,8 +19,8 @@ void drawColorPicker(Canvas& c,float h,float s,float v){
  for(int y=45;y<=180;++y)c.rect(196,y,30,1,rgb(hsvColor(h,s,1-float(y-45)/135)));
  int mx=92+int(78*s*std::cos(h*6.2831853f)),my=116+int(78*s*std::sin(h*6.2831853f));c.rect(mx-3,my-3,7,7,{255,255,255});c.rect(mx-1,my-1,3,3,{0,0,0});
  int by=45+int((1-v)*135);c.rect(193,by-1,36,3,{255,255,255});c.rect(244,48,58,58,rgb(hsvColor(h,s,v)));
- c.text(188,190,"BRIGHTNESS",{230,220,190});c.text(12,204,"PAD: HUE / SAT   L/R: VALUE",{230,220,190});
- c.rect(12,222,130,16,{95,75,40});c.text(22,226,"B CANCEL",{255,240,200});c.rect(176,222,132,16,{95,75,40});c.text(186,226,"A APPLY",{255,240,200});
+ c.text(188,190,"BRIGHTNESS",{230,220,190});c.text(12,204,"IJKL HUE/SAT  Q/E VALUE  H HEX",{230,220,190});
+ c.rect(12,222,130,16,{95,75,40});c.text(22,226,"ESC CANCEL",{255,240,200});c.rect(176,222,132,16,{95,75,40});c.text(186,226,"ENTER APPLY",{255,240,200});
 }
 
 namespace {
@@ -116,7 +116,7 @@ void drawPanel(Canvas& c,int tab,int selected,const std::vector<Row>& rows,const
   c.text(170,y,rows[i].value.substr(0,23),bone);
  }
  c.rect(6,196,308,1,rust);c.text(10,202,status.substr(0,50),rust);
- c.text(10,215,"IJKL EDIT  ENTER TYPE  SPACE TAB",bone);
+ c.text(10,215,"IJKL/WHEEL EDIT  ENTER TYPE  SPACE TAB",bone);
  c.text(10,228,"Y QUALITY  B RESET VIEW  ESC EXIT",dim);
 }
 }

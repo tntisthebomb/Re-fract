@@ -9,6 +9,7 @@ class Gpu {
 #ifdef RF_HAVE_GPU
  GpuRenderer r;bool up=false;
  public:
+ static bool supports(const Scene& s,std::string& reason){return GpuRenderer::supports(s,reason);}
  bool init(std::string& e){if(up)return true;up=r.init(e);return up;}
  bool ready()const{return up;}
  void shutdown(){if(up)r.shutdown();up=false;}
@@ -21,6 +22,7 @@ class Gpu {
  const char* name()const{return up?r.rendererName():"none";}
 #else
  public:
+ static bool supports(const Scene&,std::string& reason){reason="built without GPU renderer";return false;}
  bool init(std::string& e){e="built without GPU renderer";return false;}
  bool ready()const{return false;}
  void shutdown(){}

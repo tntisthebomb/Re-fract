@@ -229,5 +229,6 @@ bool loadScene(Scene& scene,const std::string& path,std::string& error);
 bool saveJPEG(const std::vector<Color>& pixels,int width,int height,const std::string& path,std::string& error);
 bool saveMPO(const std::vector<Color>& left,const std::vector<Color>& right,const std::string& path,std::string& error);
 bool saveBMP(const std::vector<Color>& pixels,int width,int height,const std::string& path,std::string& error);
+bool savePNG(const std::vector<Color>& pixels,int width,int height,const std::string& path,std::string& error);
 bool savePPM(const std::vector<Color>& image,const std::string& path,std::string& error);
 }
