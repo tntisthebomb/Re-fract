@@ -29,7 +29,10 @@ class Platform {
   case SDL_SCANCODE_Z:return KEY_ZL;case SDL_SCANCODE_C:return KEY_ZR;
   default:return 0;}
  }
+ static uint32_t heldKeys(){const Uint8* k=SDL_GetKeyboardState(nullptr);uint32_t held=0;for(int s=0;s<SDL_NUM_SCANCODES;++s)if(k[s])held|=map(SDL_Scancode(s));return held;}
  public:
+ // Call after a modal loop so keys still held from it do not register as new presses.
+ void absorb(){SDL_PumpEvents();previous=heldKeys();}
  SDL_Window* window=nullptr;SDL_GLContext context=nullptr;
  bool fullscreen=false;
  void poll(Input& in){
@@ -49,8 +52,7 @@ class Platform {
    else if(e.type==SDL_MOUSEWHEEL)in.wheel+=float(e.wheel.y);
   }
   SDL_GetMouseState(&in.mouseX,&in.mouseY);
-  const Uint8* k=SDL_GetKeyboardState(nullptr);uint32_t held=0;
-  for(int s=0;s<SDL_NUM_SCANCODES;++s)if(k[s])held|=map(SDL_Scancode(s));
+  const Uint8* k=SDL_GetKeyboardState(nullptr);uint32_t held=heldKeys();
   // Held bits never include the transient click; motion keys are read as analog axes.
   in.circleX=float(k[SDL_SCANCODE_D])-float(k[SDL_SCANCODE_A]);in.circleY=float(k[SDL_SCANCODE_W])-float(k[SDL_SCANCODE_S]);
   in.stickX=float(k[SDL_SCANCODE_RIGHT])-float(k[SDL_SCANCODE_LEFT]);in.stickY=float(k[SDL_SCANCODE_UP])-float(k[SDL_SCANCODE_DOWN]);

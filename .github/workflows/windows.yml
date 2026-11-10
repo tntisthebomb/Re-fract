@@ -1,0 +1,54 @@
+name: Windows port
+on:
+  push:
+    paths: ['windows/**', '.github/workflows/windows.yml']
+  pull_request:
+    paths: ['windows/**', '.github/workflows/windows.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S windows -B build-windows -G "Visual Studio 17 2022" -A x64
+      - name: Build
+        run: cmake --build build-windows --config Release --parallel
+      - name: Bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/Re-fract-windows | Out-Null
+          Copy-Item build-windows/Release/Re-fract.exe dist/Re-fract-windows/
+          # SDL2 is linked statically unless a shared SDL2 was found; ship its DLL if present.
+          Get-ChildItem build-windows/Release -Filter *.dll | Copy-Item -Destination dist/Re-fract-windows/
+          Copy-Item windows/README.md dist/Re-fract-windows/
+          Compress-Archive -Path dist/Re-fract-windows/* -DestinationPath dist/Re-fract-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Re-fract-windows
+          path: dist/Re-fract-windows.zip
+          if-no-files-found: error
+  linux-selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev libgl-dev libgl1-mesa-dri xvfb ninja-build
+      - name: Build
+        run: |
+          cmake -S windows -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-linux
+      - name: Selftest (CPU backend)
+        run: |
+          export LIBGL_ALWAYS_SOFTWARE=1 MESA_GL_VERSION_OVERRIDE=3.3 MESA_GLSL_VERSION_OVERRIDE=330
+          xvfb-run -a build-linux/Re-fract --selftest --frames 20 --preset 3 --screenshot cpu.ppm --panel-shot panel.ppm
+          test -s cpu.ppm
+      - name: Selftest (GPU backend on llvmpipe)
+        run: |
+          export LIBGL_ALWAYS_SOFTWARE=1 MESA_GL_VERSION_OVERRIDE=3.3 MESA_GLSL_VERSION_OVERRIDE=330
+          xvfb-run -a build-linux/Re-fract --selftest --backend gpu --res 640x360 --frames 5 --preset 3 --screenshot gpu.ppm
+          test -s gpu.ppm
