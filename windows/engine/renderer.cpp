@@ -8,13 +8,16 @@ Rays::Rays(const Scene& s){
  forward={sy*cp,sp,cy*cp};right={cy,0,-sy};up={-sy*sp,cp,-cy*sp};
  tangent=std::tan(s.settings.fov*3.14159265f/360);
  light={std::sin(s.settings.lightYaw)*std::cos(s.settings.lightPitch),std::sin(s.settings.lightPitch),-std::cos(s.settings.lightYaw)*std::cos(s.settings.lightPitch)};
+ deep=s.settings.deepDouble;anchor=s.camera.position;
  for(int i=0;i<2;++i){const auto& p=s.settings.pointLights[i];
-  pointPositions[i]=p.cameraRelative?s.camera.position+right*p.position.x+up*p.position.y+forward*p.position.z:p.position;
+  Vec offset=right*p.position.x+up*p.position.y+forward*p.position.z;
+  if(deep)pointPositions[i]=p.cameraRelative?offset:Vec(DVec(p.position)-anchor);
+  else pointPositions[i]=p.cameraRelative?Vec(anchor+offset):p.position;
   if(p.enabled&&p.intensity>0)pointMask|=1<<i;
  }
 }
 void Rays::ray(const Scene& s,float x,float y,float eye,Vec& origin,Vec& direction)const{
- origin=s.camera.position+right*eye;
+ origin=deep?right*eye:Vec(s.camera.position+right*eye);
  float px=(2*x/W-1)*tangent*(float(W)/H)-eye/s.settings.convergence;
  float py=(1-2*y/H)*tangent;
  direction=(forward+right*px+up*py).unit();
@@ -29,9 +32,13 @@ void Rays::lensRay(const Scene& s,float x,float y,float eye,float lensX,float le
 namespace {
 Color quantize(Vec v){return {uint8_t(clamp(v.x,0,1)*255),uint8_t(clamp(v.y,0,1)*255),uint8_t(clamp(v.z,0,1)*255)};}
 float radicalInverse(uint32_t n,uint32_t base){float value=0,weight=1.f/base;while(n){value+=(n%base)*weight;n/=base;weight/=base;}return value;}
-int lightingTarget(const Settings& s){return s.quality?1:std::max(s.stillBlock,s.lightingBlock);}
+bool lightingProgressive(const Settings& s){return s.progressiveLighting&&((s.giSamples>0&&s.giStrength>0)||(s.dof&&s.aperture>0));}
+// Auto refine: after the block refinement, keep adding jittered full-resolution passes (supersampling) while the camera is still.
+bool refineActive(const Settings& s){return s.autoRefine&&!s.quality&&s.refineSamples>1&&!lightingProgressive(s);}
+int lightingTarget(const Settings& s){return s.quality?1:lightingProgressive(s)?std::max(s.stillBlock,s.lightingBlock):s.stillBlock;}
 bool separateActive(const Settings& s){return s.separateLighting&&!s.quality&&!(s.dof&&s.aperture>0)&&s.giSamples>0&&s.giStrength>0;}
-bool progressiveActive(const Settings& s){return s.progressiveLighting&&((s.giSamples>0&&s.giStrength>0)||(s.dof&&s.aperture>0));}
+bool progressiveActive(const Settings& s){return lightingProgressive(s)||refineActive(s);}
+int passesOf(const Settings& s){return lightingProgressive(s)?s.lightingPasses:refineActive(s)?s.refineSamples:1;}
 }
 float hitTolerance(const Settings& o,float t,float tangent){
  float ceiling=o.epsilon*(o.quality?.5f:1.f)*std::fmax(1.f,t*.2f);
@@ -42,9 +49,9 @@ float hitTolerance(const Settings& o,float t,float tangent){
 int renderingIterations(const Scene& s,bool moving){
  if(!s.settings.adaptiveDetail)return s.formula.iterations;
  if(moving)return std::min(s.formula.iterations,s.settings.previewIterations);
- Sample proximity=distanceOnly(s.formula,s.camera.position);
- if(!proximity.valid||proximity.distance>=.25f)return s.formula.iterations;
- float ratio=.25f/std::fmax(proximity.distance,s.settings.minEpsilon);
+ double nearest=surfaceDistance(s);
+ if(nearest<0||nearest>=.25)return s.formula.iterations;
+ float ratio=float(.25/std::fmax(nearest,double(s.settings.minEpsilon)));
  int extra=std::max(0,int(std::ceil(std::log2(ratio))));
  return std::min(std::max(s.formula.iterations,s.settings.detailIterations),s.formula.iterations+extra);
 }
@@ -61,8 +68,14 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  // Per-ray counts fit in 32 bits; publish 64-bit totals once, avoiding paired
  // loads/stores on ARM11 for every distance-estimator call.
  uint32_t queries=0,shadingQueries=0,stepsTaken=0;
- const DistanceField* field=fast&&!s.settings.quality?rays.field:nullptr;
- auto query=[&](Vec p,bool shading=false){float cached;if(field&&!shading&&field->lookup(p,cached)){++result.profile.reused;return Sample{cached,0,true};}++queries;if(shading)++shadingQueries;return distanceOnly(s.formula,p,s.settings.quality);};
+ const bool deep=rays.deep;
+ const DistanceField* field=!deep&&fast&&!s.settings.quality?rays.field:nullptr;
+ // Deep zoom: points are camera-relative floats; the distance estimator runs in double on anchor+point.
+ auto absolute=[&](Vec p){return DVec(rays.anchor.x+p.x,rays.anchor.y+p.y,rays.anchor.z+p.z);};
+ auto dist=[&](Vec p,bool exact){return deep?distanceDouble(s.formula,absolute(p),exact,false):distanceOnly(s.formula,p,exact);};
+ auto distT=[&](Vec p,bool exact){return deep?distanceDouble(s.formula,absolute(p),exact,true):distance(s.formula,p,exact);};
+ auto boundary=[&](Vec p,Vec d){return deep?repeatBoundaryStepDouble(s.formula,absolute(p),d):repeatBoundaryStep(s.formula,p,d);};
+ auto query=[&](Vec p,bool shading=false){float cached;if(field&&!shading&&field->lookup(p,cached)){++result.profile.reused;return Sample{cached,0,true};}++queries;if(shading)++shadingQueries;return dist(p,s.settings.quality);};
  auto finish=[&](Color c){result.color=c;result.radiance=Vec{float(c.r),float(c.g),float(c.b)}*(1.f/255);result.profile.distanceQueries=queries;result.profile.shadingQueries=shadingQueries;result.profile.steps=stepsTaken;return result;};
  auto finishLinear=[&](Vec color){auto out=finish(quantize(color));out.radiance=color;return out;};
  Vec origin,dir;
@@ -83,7 +96,7 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
   previousT=t;previousD=d.distance;advance=std::fmax(d.distance*o.safety,eps*.25f);
   relaxed=!o.quality&&!s.formula.repeat&&o.relaxation>1; if(relaxed)advance*=o.relaxation;
   // Stop at a periodic-cell boundary before tracing the next cell's geometry.
-  if(s.formula.repeat)advance=std::fmin(advance,repeatBoundaryStep(s.formula,origin+dir*t,dir)+eps*.25f);
+  if(s.formula.repeat)advance=std::fmin(advance,boundary(origin+dir*t,dir)+eps*.25f);
   t+=advance;
  }
  if(!surface&&startDepth>0&&!hit){auto retry=sampleRay(s,rays,x,y,eye,fast,sequence,varied,lens,indirect,0,skyLikely,nullptr);retry.profile.steps+=stepsTaken;retry.profile.distanceQueries+=queries;retry.profile.reused+=result.profile.reused;retry.profile.budgetRetries+=result.profile.budgetRetries;retry.profile.relaxFallbacks+=result.profile.relaxFallbacks;++retry.profile.depthStarts;return retry;}
@@ -91,11 +104,12 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
  Vec background=o.skyColor;
  if(!hit){result.shade.valid=true;result.shade.background=true;result.shade.escaped=t>=o.farClip;return finishLinear(background*o.exposure);}
  Vec p=origin+dir*t;result.hit=true;result.point=p;result.depth=t;
- if(!surface){++queries;++shadingQueries;trap=distance(s.formula,p,o.quality).trap;}
+ if(!surface){++queries;++shadingQueries;trap=distT(p,o.quality).trap;}
  if(fast){result.shade={trap,t,1,0,true};float fog=std::exp(-t*o.fog);return finishLinear((gradientColor(o,trap)*((1+o.emission)*fog)+background*(1-fog))*o.exposure);}
  float e=o.adaptivePrecision?hitTolerance(o,t,rays.tangent):std::fmax(o.epsilon,t*o.epsilon*.25f);
  // At large coordinates, a sub-ULP normal offset would sample the same point.
- if(o.adaptivePrecision)e=std::fmax(e,4*1.1920929e-7f*std::fmax(1.f,std::fmax(std::fabs(p.x),std::fmax(std::fabs(p.y),std::fabs(p.z)))));
+ if(o.adaptivePrecision){if(deep)e=std::fmax(e,float(4*2.2204460e-16*std::fmax(1.,std::fmax(std::fabs(rays.anchor.x+p.x),std::fmax(std::fabs(rays.anchor.y+p.y),std::fabs(rays.anchor.z+p.z))))));
+  else e=std::fmax(e,4*1.1920929e-7f*std::fmax(1.f,std::fmax(std::fabs(p.x),std::fmax(std::fabs(p.y),std::fabs(p.z)))));}
  // Tetrahedral normal: four DE evaluations instead of six central differences.
  Vec v1{1,-1,-1},v2{-1,-1,1},v3{-1,1,-1},v4{1,1,1};
  Vec n=surface?surface->normal:(v1*query(p+v1*e,true).distance+v2*query(p+v2*e,true).distance+
@@ -121,7 +135,7 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
      if(!d.valid||d.distance<offset){visibility=0;break;}
      visibility=std::fmin(visibility,12*d.distance/travel);
      float stride=std::fmax(d.distance*o.safety,offset);
-     if(s.formula.repeat)stride=std::fmin(stride,repeatBoundaryStep(s.formula,q,direction)+offset*.25f);
+     if(s.formula.repeat)stride=std::fmin(stride,boundary(q,direction)+offset*.25f);
      travel+=stride;
     }
     if(travel<length)visibility=0;
@@ -156,7 +170,7 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
      // Approximate one diffuse bounce, with an estimated secondary normal.
      Vec bn=(v1*query(q+v1*e,true).distance+v2*query(q+v2*e,true).distance+
               v3*query(q+v3*e,true).distance+v4*query(q+v4*e,true).distance).unit();
-     ++queries;++shadingQueries;Sample material=distance(s.formula,q,o.quality);
+     ++queries;++shadingQueries;Sample material=distT(q,o.quality);
      if(material.valid){Vec bounce=gradientColor(o,material.trap);Vec local,unused;
       if(rays.pointMask)pointLighting(q,bn,e,direction,false,local,unused);
       incoming=incoming+bounce*(.15f+.85f*std::fmax(0.f,bn.dot(rays.light))*o.sunStrength+o.emission)+bounce.multiply(local);
@@ -164,7 +178,7 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
      bounced=true;break;
     }
     float stride=std::fmax(d.distance*o.safety,e);
-    if(s.formula.repeat)stride=std::fmin(stride,repeatBoundaryStep(s.formula,q,direction)+e*.25f);
+    if(s.formula.repeat)stride=std::fmin(stride,boundary(q,direction)+e*.25f);
     travel+=stride;
    }
    // Exhausted rays are treated as occluded, rather than leaking skylight.
@@ -188,11 +202,27 @@ bool StereoSlider::update(const Settings& s,float raw){
  }
  return strength!=previous;
 }
+double surfaceDistance(const Scene& s){
+ Sample d=s.settings.deepDouble?distanceDouble(s.formula,s.camera.position,false,false):distanceOnly(s.formula,s.camera.position);
+ return d.valid&&std::isfinite(d.distance)?double(d.distance):-1.;
+}
+double surfaceFootprint(const Scene& s){
+ double d=surfaceDistance(s);if(d<0)return 1;
+ return std::fmax(d,1e-300)*2*std::tan(double(s.settings.fov)*3.14159265358979/360)/H*s.settings.pixelTolerance;
+}
+bool needsDoublePrecision(const Scene& s,double margin){
+ // Always measured with the double estimator; threshold relative to the position magnitude (at least 1).
+ Sample d=distanceDouble(s.formula,s.camera.position,false,false);if(!d.valid||!std::isfinite(d.distance))return false;
+ double scale=std::fmax(1.,std::fmax(std::fabs(s.camera.position.x),std::fmax(std::fabs(s.camera.position.y),std::fabs(s.camera.position.z))));
+ double footprint=double(d.distance)*2*std::tan(double(s.settings.fov)*3.14159265358979/360)/H*s.settings.pixelTolerance;
+ return footprint<1e-5*scale*margin;
+}
 float cameraSpeedScale(const Scene& s){
  if(!s.camera.surfaceSpeed)return 1;
- Sample d=distanceOnly(s.formula,s.camera.position);
- if(!d.valid||!std::isfinite(d.distance))return s.camera.minimumSpeed;
- return clamp(d.distance/s.camera.surfaceRange,s.camera.minimumSpeed,1);
+ // Speed is proportional to the surface distance with no floor, so repeated forward motion approaches the surface asymptotically.
+ double d=surfaceDistance(s);
+ if(d<0)return s.camera.minimumSpeed;
+ return float(std::fmin(1.,std::fmax(d,1e-30)/s.camera.surfaceRange));
 }
 Vec gradientColor(const Settings& s,float trap){
  float input=s.boundedGradient?std::fmax(trap,0.f)/(1+std::fmax(trap,0.f)):trap;
@@ -221,6 +251,8 @@ RenderResult renderJob(const Scene& s,const Rays& rays,const RenderJob& j){
  if(lens)count=std::max(count,s.settings.dofSamples);
  Vec radiance;
  for(int i=0;i<count;++i){float jx,jy;samplePattern(i,count,jx,jy);
+  // Progressive passes jitter the pixel position with the R2 sequence (pass 0 is the pixel centre).
+  if(j.accumulate&&!j.surface&&count==1)samplePattern(int(j.sample),1<<30,jx,jy);
   // Lens samples repeat the same pixel pattern (see samplePattern) while varying the aperture.
   auto r=sampleRay(s,rays,std::min(W-.5f,j.x+j.block*jx),std::min(H-.5f,j.y+j.block*jy),j.offset,j.fast&&!s.settings.quality,
    j.sample*uint32_t(count)+i,j.accumulate||lens||j.surface,lens,!coarseLighting,j.startDepth,j.skyLikely,j.surface);
@@ -247,7 +279,7 @@ Color shadeCell(const Scene& s,const Rays& r,int x,int y,int b,float eye,int cou
  return {uint8_t(red/count),uint8_t(green/count),uint8_t(blue/count)};
 }
 bool Rays::project(const Scene& s,Vec p,float eye,float& x,float& y,float& depth)const{
- Vec v=p-(s.camera.position+right*eye);float z=v.dot(forward);if(z<=.001f)return false;
+ Vec v=deep?p-right*eye:p-Vec(s.camera.position+right*eye);float z=v.dot(forward);if(z<=.001f)return false;
  x=W*.5f*(1+(v.dot(right)/z+eye/s.settings.convergence)/(tangent*float(W)/H));
  y=H*.5f*(1-v.dot(up)/z/tangent);depth=v.length();return std::isfinite(x)&&std::isfinite(y)&&x>=0&&x<W&&y>=0&&y<H&&depth<s.settings.farClip;
 }
@@ -260,6 +292,7 @@ void Renderer::invalidate(const Scene& s,bool motion,bool clearHistory){
  if(clearHistory||motion||!s.settings.adaptiveEmpty){emptyBlock=0;emptyPass=0;}
  if(!progressiveActive(s.settings))for(auto& sum:accumulation)std::vector<Vec>().swap(sum);
  int next=motion?(s.settings.adaptiveResolution?dynamicBlock:s.settings.previewBlock):(s.settings.quality?1:std::max(s.settings.previewBlock,s.settings.stillBlock));
+ if(!motion&&!s.settings.quality&&s.settings.autoRefine)next=std::max(next,16);
  if(clearHistory||!(motion&&moving)||next!=block){index=0;lane=0;passTiming=false;}
  if(!motion&&s.settings.depthPrepass&&!s.settings.quality&&s.settings.autoRefine)next=std::max(next,s.settings.prepassBlock);
  moving=motion;block=next;done=false;
@@ -444,7 +477,7 @@ void Renderer::step(const Scene& s,const Rays& rays,float slider){
      for(int e=0;e<eyes;++e)lightSamples[e].assign(((W+std::max(block,o.lightingBlock)-1)/std::max(block,o.lightingBlock))*((H+std::max(block,o.lightingBlock)-1)/std::max(block,o.lightingBlock)),LightSample{});
      return;}
     finishPass(s,eyes);finishedLightingPasses=lightingPass+1;
-    if(finishedLightingPasses<(o.progressiveLighting?o.lightingPasses:1)){++lightingPass;return;}
+    if(finishedLightingPasses<passesOf(o)){++lightingPass;return;}
    }
    done=true;cacheReady=!moving&&o.bloom<=0&&(!o.quality||o.samples==1)&&!o.adaptiveTiles&&!accumulate&&!(o.dof&&o.aperture>0);break;
   }continue;}
@@ -492,13 +525,14 @@ void Renderer::step(const Scene& s,const Rays& rays,float slider){
  if(lightingOnly)resolveLighting(s,eyes,jobs,count);
  if(done)finishPass(s,eyes);
 }
+int Renderer::passTarget(const Settings& s){return passesOf(s);}
 float Renderer::progress(const Scene& s)const{
  if(done)return 1;
  int stride=lightingOnly?std::max(geometryBlock,s.settings.lightingBlock):block;
  int total=((W+stride-1)/stride)*((H+stride-1)/stride),lanes=std::min(s.settings.interlace,total);
  float pass=clamp(float(lane)/lanes+float(index)/total,0,1);
- if(lightingOnly)return (lightingPass+pass)/(s.settings.progressiveLighting?s.settings.lightingPasses:1);
- if(!moving&&progressiveActive(s.settings)&&!separateActive(s.settings)&&(block<=lightingTarget(s.settings)||!s.settings.autoRefine))return (lightingPass+pass)/s.settings.lightingPasses;
+ if(lightingOnly)return (lightingPass+pass)/(lightingProgressive(s.settings)?s.settings.lightingPasses:1);
+ if(!moving&&progressiveActive(s.settings)&&!separateActive(s.settings)&&(block<=lightingTarget(s.settings)||!s.settings.autoRefine))return (lightingPass+pass)/passesOf(s.settings);
  return pass;
 }
 }

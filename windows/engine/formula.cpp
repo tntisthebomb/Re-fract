@@ -310,4 +310,95 @@ template<bool Trap> Sample dispatch(const Formula& f,Vec p,bool exact=false){
 Sample distance(const Formula& f,Vec p,bool exact){return dispatch<true>(f,repeatPoint(f,p),exact);}
 Sample distanceOnly(const Formula& f,Vec p,bool exact){return dispatch<false>(f,repeatPoint(f,p),exact);}
 Sample distanceGeneric(const Formula& f,Vec p,bool trap){p=repeatPoint(f,p);return trap?evaluateGenericDistance<true>(f,p,true):evaluateGenericDistance<false>(f,p,true);}
+struct DSample {double distance=0,trap=0;bool valid=true;};
+inline double dclamp(double x,double lo,double hi){return x<lo?lo:x>hi?hi:x;}
+double dradialPower(double r,double p,int n){
+ if(n>=0){double out=1;while(n){if(n&1)out*=r;r*=r;n>>=1;}return out;}
+ return std::pow(r,p);
+}
+template<bool Trap> DSample evaluateGenericDouble(const Formula& f,DVec p,bool exact){
+ DVec z=p,c=f.julia?DVec(f.constant):p;double dr=1,trap=1e6f,r=0;
+ for(int i=0;i<f.iterations;++i){
+  if(z.dot(z)>f.bailout*f.bailout)break;
+  for(int stageIndex=0;stageIndex<f.activeCount;++stageIndex){const Stage& s=f.stages[f.active[stageIndex]];
+   switch(s.kind){
+    case Kind::KleinianFold:{z={2*dclamp(z.x,-s.a,s.a)-z.x,2*dclamp(z.y,-s.b,s.b)-z.y,2*dclamp(z.z,-s.c,s.c)-z.z};break;}
+    case Kind::Inversion:{double k=std::fmax(1.f,s.minimum2/std::fmax(z.dot(z),1e-12f));z=z*k;dr*=k;break;}
+    case Kind::BoxFold:{double limit=std::fabs(s.a);z={2*dclamp(z.x,-limit,limit)-z.x,2*dclamp(z.y,-limit,limit)-z.y,2*dclamp(z.z,-limit,limit)-z.z};break;}
+    case Kind::SphereFold:{double r2=z.dot(z),min2=s.minimum2,fixed2=s.fixed2;
+     double k=r2<min2?s.innerScale:r2<fixed2?fixed2/std::fmax(r2,1e-12f):1;
+     z=z*k;dr*=k;break;
+    }
+    case Kind::Bulb:{
+     double r=z.length();if(r<1e-12f){z={};dr=std::fmax(dr,1e-12f);break;}
+     double power=dradialPower(r,s.a-1,s.integerPower);
+     // Angular multipliers can stretch the transform beyond the standard bulb.
+     dr*=power*s.stretch;
+     double nr=power*r;
+     if(f.algebraicBulb&&!exact&&(s.a==2||s.a==4||s.a==8||s.a==16)&&s.b==1&&s.c==1){
+      double radial=std::sqrt(z.x*z.x+z.y*z.y),st=radial/r,ct=z.z/r;
+      double sp=radial>0?z.y/radial:0,cp=radial>0?z.x/radial:1;
+      for(int n=int(s.a);n>1;n>>=1){double ns=2*st*ct,nc=ct*ct-st*st;st=ns;ct=nc;ns=2*sp*cp;nc=cp*cp-sp*sp;sp=ns;cp=nc;}
+      z={nr*st*cp,nr*st*sp,nr*ct};
+     }else{
+      double theta=std::acos(dclamp(z.z/r,-1,1))*s.thetaPower,phi=std::atan2(z.y,z.x)*s.phiPower,sinTheta=std::sin(theta);
+      z={nr*sinTheta*std::cos(phi),nr*sinTheta*std::sin(phi),nr*std::cos(theta)};
+     }break;
+    }
+    case Kind::Scale:z=z*s.a+c*s.b;dr=dr*std::fabs(s.a)+(f.julia?0:std::fabs(s.b));break;
+    case Kind::Rotate:{const auto& m=s.rotation;z={m[0]*z.x+m[1]*z.y+m[2]*z.z,m[3]*z.x+m[4]*z.y+m[5]*z.z,m[6]*z.x+m[7]*z.y+m[8]*z.z};break;}
+    case Kind::Offset:z=z+DVec{s.a,s.b,s.c};break;
+    case Kind::Absolute:z={std::fabs(z.x),std::fabs(z.y),std::fabs(z.z)};break;
+    case Kind::Sort:if(z.x<z.y)std::swap(z.x,z.y);if(z.x<z.z)std::swap(z.x,z.z);if(z.y<z.z)std::swap(z.y,z.z);break;
+    case Kind::Menger:{
+     z={std::fabs(z.x),std::fabs(z.y),std::fabs(z.z)};
+     if(z.x<z.y)std::swap(z.x,z.y);
+     if(z.x<z.z)std::swap(z.x,z.z);
+     if(z.y<z.z)std::swap(z.y,z.z);
+     z=z*s.a-DVec{s.b,s.b,0}*(s.a-1);
+     double cut=s.c*(s.a-1);if(z.z>cut*.5f)z.z-=cut;dr*=std::fabs(s.a);break;
+    }
+    case Kind::Tetra:
+     if(z.x+z.y<0){double t=z.x;z.x=-z.y;z.y=-t;}
+     if(z.x+z.z<0){double t=z.x;z.x=-z.z;z.z=-t;}
+     if(z.y+z.z<0){double t=z.y;z.y=-z.z;z.z=-t;}break;
+    case Kind::Expression:{
+     Vec zf{float(z.x),float(z.y),float(z.z)},cf{float(c.x),float(c.y),float(c.z)};
+     Dual out[3];for(int j=0;j<3;++j)if(!s.expr[j].evaluate(zf,cf,out[j]))return {0,trap,false};
+     double jz=0,jc=0;for(const Dual& v:out)for(int j=0;j<3;++j){jz+=double(v.d[j])*v.d[j];jc+=double(v.d[j+3])*v.d[j+3];}
+     dr=std::sqrt(jz)*dr+(f.julia?0:std::sqrt(jc));z={out[0].value,out[1].value,out[2].value};break;
+    }
+    default:return {0,0,false};
+   }
+   if(!std::isfinite(z.x)||!std::isfinite(z.y)||!std::isfinite(z.z)||!std::isfinite(dr)||dr>1e30f)return {0,trap,false};
+   if constexpr(Trap)trap=std::fmin(trap,z.dot(z));
+  }
+ }
+ r=z.length();double d=f.logarithmic?.5f*std::log(std::fmax(r,1e-300))*r/std::fmax(dr,1e-12f):r/std::fmax(dr,1e-12f);
+ if(f.terminal==1){DVec q{std::fabs(z.x)-f.terminalRadius,std::fabs(z.y)-f.terminalRadius,std::fabs(z.z)-f.terminalRadius};
+  DVec outside{std::fmax(q.x,0.f),std::fmax(q.y,0.f),std::fmax(q.z,0.f)};
+  d=(outside.length()+std::fmin(std::fmax(q.x,std::fmax(q.y,q.z)),0.f))/std::fmax(dr,1e-12f);
+ }else if(f.terminal==3){
+  double xy=std::sqrt(z.x*z.x+z.y*z.y);
+  d=std::fmax(xy-f.terminalRadius,std::fabs(xy*z.z)/std::fmax(r,1e-300))/std::fmax(dr,1e-12f);
+ }else if(f.terminal==2){
+  d=(std::fmax(-z.x-z.y-z.z,std::fmax(-z.x+z.y+z.z,std::fmax(z.x-z.y+z.z,z.x+z.y-z.z)))-f.terminalRadius)*.57735027f/std::fmax(dr,1e-12f);
+ }
+ d=std::fmax(0.f,d)/f.derivativeScale;
+ return {d,Trap?std::sqrt(trap):0.f,std::isfinite(d)};
+}
+
+namespace {
+DVec repeatPointD(const Formula& f,DVec p){if(!f.repeat)return p;auto wrap=[](double v,double period){return period>0?v-period*std::floor(v/period+.5):v;};return {wrap(p.x,f.repeatPeriod.x),wrap(p.y,f.repeatPeriod.y),wrap(p.z,f.repeatPeriod.z)};}
+}
+float repeatBoundaryStepDouble(const Formula& f,DVec point,Vec direction){
+ if(!f.repeat)return 1e30f;
+ DVec local=repeatPointD(f,point);double step=1e30;
+ auto axis=[&](double p,double d,double period){if(period<=0||std::fabs(d)<1e-12)return;double boundary=d>0?period*.5:-period*.5;step=std::fmin(step,std::fmax(0.,(boundary-p)/d));};
+ axis(local.x,direction.x,f.repeatPeriod.x);axis(local.y,direction.y,f.repeatPeriod.y);axis(local.z,direction.z,f.repeatPeriod.z);return float(std::fmin(step,1e30));
+}
+Sample distanceDouble(const Formula& f,DVec p,bool exact,bool trap){
+ p=repeatPointD(f,p);DSample r=trap?evaluateGenericDouble<true>(f,p,exact):evaluateGenericDouble<false>(f,p,exact);
+ return {float(r.distance),float(r.trap),r.valid&&std::isfinite(float(r.distance))};
+}
 }

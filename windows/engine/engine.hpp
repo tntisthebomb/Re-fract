@@ -18,6 +18,19 @@ inline void samplePattern(int i,int count,float& jx,float& jy){
  if(count<=4){jx=count==1?.5f:(i&1)?.75f:.25f;jy=count<=2?.5f:(i&2)?.75f:.25f;return;}
  float a=.5f+float(i)*.75487767f,b=.5f+float(i)*.56984029f;jx=a-std::floor(a);jy=b-std::floor(b);
 }
+struct Vec;
+// Double-precision vector for the camera position and the deep-zoom distance estimator.
+struct DVec {
+ double x=0,y=0,z=0;
+ DVec()=default; DVec(double X,double Y,double Z):x(X),y(Y),z(Z){}
+ DVec(const Vec& v);
+ operator Vec() const;
+ DVec operator+(const DVec& b)const{return {x+b.x,y+b.y,z+b.z};}
+ DVec operator-(const DVec& b)const{return {x-b.x,y-b.y,z-b.z};}
+ DVec operator*(double s)const{return {x*s,y*s,z*s};}
+ double dot(const DVec& b)const{return x*b.x+y*b.y+z*b.z;}
+ double length()const{return std::sqrt(dot(*this));}
+};
 struct Vec {
  float x=0,y=0,z=0;
  Vec()=default; Vec(float X,float Y,float Z):x(X),y(Y),z(Z){}
@@ -29,6 +42,8 @@ struct Vec {
  float length()const{return std::sqrt(dot(*this));}
  Vec unit()const{float n=length();return n>1e-12f?*this*(1/n):Vec{0,0,1};}
 };
+inline DVec::DVec(const Vec& v):x(v.x),y(v.y),z(v.z){}
+inline DVec::operator Vec() const{return Vec{float(x),float(y),float(z)};}
 enum class Op {Constant,Variable,Add,Sub,Mul,Div,Pow,Neg,Sin,Cos,Abs,Sqrt,Log,Exp,Min,Max};
 struct Instruction {Op op;float value=0;int variable=0;};
 // Dual values carry partial derivatives w.r.t. x,y,z,cx,cy,cz.
@@ -70,6 +85,9 @@ Sample distance(const Formula& f,Vec p,bool exact=false);
 Sample distanceOnly(const Formula& f,Vec p,bool exact=false);
 // Reference path for differential tests and host profiling.
 Sample distanceGeneric(const Formula& f,Vec p,bool trap=true);
+// Double-precision distance estimator (generic path; Expression stages are evaluated in float). Used for deep zoom.
+Sample distanceDouble(const Formula& f,DVec p,bool exact=false,bool trap=false);
+float repeatBoundaryStepDouble(const Formula& f,DVec point,Vec direction);
 float repeatBoundaryStep(const Formula& f,Vec point,Vec direction);
 struct PointLight {
  bool enabled=false,cameraRelative=true;
@@ -84,6 +102,10 @@ struct Settings {
  int stillBlock=1,upscale=0;
  int steps=64,previewBlock=8,interlace=4,ao=0,shadow=0,samples=1;
  float epsilon=.002f,safety=.65f,farClip=20,fov=55;
+ // Auto refine: after the block refinement finishes, keep adding jittered full-resolution samples up to this many passes (1 = off).
+ int refineSamples=16;
+ // Runtime precision state (not saved): precisionMode 0=AUTO 1=FLOAT 2=DOUBLE; deepDouble is the resolved choice for this frame.
+ int precisionMode=0;bool deepDouble=false;
  float eyeSeparation=.065f,convergence=4,exposure=1,fog=.035f;
  float lightYaw=-.7f,lightPitch=.8f,palette=0,specular=.2f;
  bool stereo=true,quality=false,autoRefine=true,parallel=true;
@@ -101,12 +123,12 @@ struct Settings {
  bool gpuCache=false;
  int meshStride=4;
  float meshEdge=.08f,meshNear=.005f;
- bool adaptivePrecision=false,gpuAutoRefresh=false;
- bool adaptiveDetail=false;
+ bool adaptivePrecision=true,gpuAutoRefresh=false;
+ bool adaptiveDetail=true;
  bool distanceField=false;
  float fieldSpacing=.25f;
- int previewIterations=8,detailIterations=24;
- float minEpsilon=.000001f,pixelTolerance=.25f;
+ int previewIterations=8,detailIterations=200;
+ float minEpsilon=1e-15f,pixelTolerance=.25f;
  int giSamples=0,giSteps=16;
  float giStrength=.5f,giRange=2;
  Vec skyColor{.15f,.2f,.3f};
@@ -115,13 +137,19 @@ struct Settings {
  float sunStrength=1,aperture=.03f,focusDistance=4;
  int dofSamples=4,lightingPasses=16,lightingBlock=4;
 };
-struct Camera {Vec position{0,0,-4};float yaw=0,pitch=0,speed=1;bool surfaceSpeed=true;float surfaceRange=1,minimumSpeed=.01f;};
+struct Camera {DVec position{0,0,-4};float yaw=0,pitch=0,speed=1;bool surfaceSpeed=true;float surfaceRange=1,minimumSpeed=.01f;};
 Camera presetCamera(int index);
 struct Scene {Formula formula=preset(0);Settings settings;Camera camera;};
 Settings presetSettings(int index);
 float hitTolerance(const Settings& settings,float distance,float tangent);
 int renderingIterations(const Scene& scene,bool moving);
 float cameraSpeedScale(const Scene& s);
+// Distance estimate (double precision when needed) at the camera position; negative if invalid.
+double surfaceDistance(const Scene& s);
+// World-space size of one pixel at the nearest surface.
+double surfaceFootprint(const Scene& s);
+// True when float32 cannot resolve a pixel at the nearest surface (footprint < 1e-5 * |position|): needs the CPU double path.
+bool needsDoublePrecision(const Scene& s,double margin=1);
 Vec gradientColor(const Settings& s,float trap);
 struct StereoSlider {
  float strength=0;bool active=false;
@@ -130,6 +158,7 @@ struct StereoSlider {
 class DistanceField;
 struct Rays {
  Vec forward,right,up,light;float tangent=1;
+ bool deep=false;DVec anchor; // deep: ray origins/points are relative to anchor (camera) and distance queries run in double
  const DistanceField* field=nullptr;
  std::array<Vec,2> pointPositions{};int pointMask=0;
  explicit Rays(const Scene& s);
@@ -225,6 +254,8 @@ class Renderer {
  int lastCompletedFrameEyes()const{return lastPassEyes;}
  int accumulatedPasses()const{return finishedLightingPasses;}
  float progress(const Scene& s)const;
+ // Total accumulation passes of the current mode (lighting passes, or refine samples) and how many are finished.
+ static int passTarget(const Settings& s);
 };
 bool saveScene(const Scene& scene,const std::string& path,std::string& error);
 bool loadScene(Scene& scene,const std::string& path,std::string& error);
