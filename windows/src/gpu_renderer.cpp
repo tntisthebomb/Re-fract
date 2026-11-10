@@ -331,8 +331,8 @@ vec3 indirectLight(vec3 p,vec3 n,float e,float x,float y,uint seq){
   float a=GIOFF[j&3].x,b=GIOFF[j&3].y;
   if(uVaried!=0||uGiSamples>4){
    uint index=seq*uint(uGiSamples)+uint(j)+1u;
-   uint hash=uint(x)*1973u+uint(y)*9277u;
-   float radius=sqrt(radical(index,2u)),angle=6.2831853*mod(radical(index,3u)+float(hash&65535u)/65536.0,1.0);
+   float rotation=fogJitter(uint(x),uint(y),0x9e3779b9u); // per-pixel pattern rotation (real hash, as the CPU)
+   float radius=sqrt(radical(index,2u)),angle=6.2831853*mod(radical(index,3u)+rotation,1.0);
    a=radius*cos(angle);b=radius*sin(angle);
   }
   vec3 direction=u*a+v*b+n*sqrt(max(0.0,1.0-a*a-b*b));
