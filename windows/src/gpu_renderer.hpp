@@ -14,6 +14,9 @@ class GpuRenderer {
  public:
  GpuRenderer(); ~GpuRenderer();
  GpuRenderer(const GpuRenderer&)=delete; GpuRenderer& operator=(const GpuRenderer&)=delete;
+ // True if this GPU path reproduces every enabled feature of the scene (stages, lighting, DOF, GI, upscale...).
+ // If false, `reason` names the first unsupported feature and the app should render that scene on the CPU backend.
+ static bool supports(const Scene& scene,std::string& reason);
  // Requires a current GL 3.3 core context and rf::loadGL() already succeeded.
  bool init(std::string& error);
  void shutdown();
