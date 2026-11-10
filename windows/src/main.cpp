@@ -64,7 +64,7 @@ bool writePPM(const std::vector<Color>& image,int w,int h,const std::string& pat
  out<<"P6\n"<<w<<' '<<h<<"\n255\n";out.write(reinterpret_cast<const char*>(image.data()),std::streamsize(image.size()*3));
  out.close();if(!out){error="Image write failed";return false;}error="IMAGE SAVED";return true;
 }
-struct Args {int tab=0,select=0,stereo=0;std::string windowShot;int frames=0,move=0,preset=-1,width=0,height=0,wheel=0;bool selftest=false,cpu=false,gpu=false;std::string screenshot,panel;};
+struct Args {int tab=0,select=0,stereo=0;std::string windowShot;int frames=0,move=0,preset=-1,width=0,height=0,wheel=0;std::vector<double> dive;std::string divePrefix;bool selftest=false,cpu=false,gpu=false;std::string screenshot,panel;};
 Args parseArgs(int argc,char** argv){
  Args a;
  for(int i=1;i<argc;++i){std::string s=argv[i];auto next=[&]()->const char*{return i+1<argc?argv[++i]:"";};
@@ -76,12 +76,14 @@ Args parseArgs(int argc,char** argv){
   else if(s=="--tab")a.tab=std::atoi(next());
   else if(s=="--select")a.select=std::atoi(next());
   else if(s=="--wheel")a.wheel=std::atoi(next());
+  else if(s=="--dive"){std::string list=next();size_t pos=0;while(pos<list.size()){size_t end=list.find(',',pos);if(end==std::string::npos)end=list.size();a.dive.push_back(std::atof(list.substr(pos,end-pos).c_str()));pos=end+1;}}
+  else if(s=="--dive-prefix")a.divePrefix=next();
   else if(s=="--window-shot")a.windowShot=next();
   else if(s=="--stereo"){std::string m=next();a.stereo=m=="sbs"?1:m=="ana"?2:0;}
   else if(s=="--move")a.move=std::atoi(next());
   else if(s=="--backend"){std::string b=next();a.cpu=b=="cpu";a.gpu=b=="gpu";}
   else if(s=="--res"){std::sscanf(next(),"%dx%d",&a.width,&a.height);}
-  else if(s=="--help"){std::printf("Re-fract [--backend cpu|gpu] [--res WxH] [--preset N] [--selftest] [--frames N] [--screenshot out.ppm] [--panel-shot out.ppm] [--move N] [--tab N --select N --wheel NOTCHES]\n");std::exit(0);}
+  else if(s=="--help"){std::printf("Re-fract [--backend cpu|gpu] [--res WxH] [--preset N] [--selftest] [--frames N] [--screenshot out.ppm] [--panel-shot out.ppm] [--move N] [--tab N --select N --wheel NOTCHES] [--dive d1,d2,.. --dive-prefix path]\n");std::exit(0);}
  }
  return a;
 }
@@ -172,7 +174,7 @@ int main(int argc,char** argv){
  auto reconcile=[&](){
   bool desired=false;std::string why;
   if(wantGpu&&!gpu.ready()){std::string e;if(!gpu.init(e)){wantGpu=false;status="GPU UNAVAILABLE / CPU BACKEND";}}
-  if(wantGpu&&!forceCpu){desired=Gpu::supports(scene,why);}
+  if(wantGpu&&!forceCpu){desired=Gpu::supports(scene,why);if(desired&&scene.settings.deepDouble){desired=false;why="DEEP ZOOM: CPU DOUBLE";}}
   else if(wantGpu)why="GPU SHADER FAILED";
   fallbackReason=(wantGpu&&!desired)?why:"";
   if(desired!=useGpu){useGpu=desired;applyPending=true;status=desired?"GPU: "+std::string(gpu.name()):"CPU RENDER: "+why;}
@@ -293,7 +295,7 @@ int main(int argc,char** argv){
  bool panelRefresh=false;uint64_t panelRevision=1;float panelWorkMs=-1;double fpsMs=16;
  renderer.invalidate(scene,false);
  uint64_t previous=uint64_t(nowMs()),nextRepeat=0;uint32_t lastDirection=0;int lastMouseX=-1,lastMouseY=-1;
- Input in;int exitCode=0;
+ Input in;int exitCode=0;struct {size_t index=0;bool arrived=false;int settle=0;} dive;
  while(true){
   uint64_t now=uint64_t(nowMs());float dt=clamp(float(now-previous)*.001f,.001f,.05f);previous=now;
   double frameStart=nowMs();
@@ -304,6 +306,16 @@ int main(int argc,char** argv){
   if(in.togglePanel){panelVisible=!panelVisible;}
   if(in.screenshot)screenshotRequested=true;
   if(in.fullscreen){pf.setFullscreen(!pf.fullscreen);menuDirty=true;}
+  if(dive.index<args.dive.size()){
+   double d=surfaceDistance(scene);
+   if(!dive.arrived){if(d>=0&&d<=args.dive[dive.index]){dive.arrived=true;dive.settle=int(frameNumber);}else{in.circleY=1;in.held|=KEY_X;}}
+   else if(int(frameNumber)>dive.settle+3&&(useGpu?gpuDone:renderer.complete())&&!benchmarkActive){
+    std::vector<Color> img;int w=0,h=0;std::string error;double dd=surfaceDistance(scene);
+    std::printf("dive %zu: target=%g distance=%g precision=%s backend=%s pos=(%.12g,%.12g,%.12g) frame=%llu\n",dive.index,args.dive[dive.index],dd,scene.settings.deepDouble?"double":"float",useGpu?"gpu":"cpu",scene.camera.position.x,scene.camera.position.y,scene.camera.position.z,(unsigned long long)frameNumber);
+    if(currentImage(0,img,w,h)&&!args.divePrefix.empty())writePPM(img,w,h,args.divePrefix+"-"+std::to_string(dive.index)+".ppm",error);
+    ++dive.index;dive.arrived=false;
+   }
+  }
   uint32_t down=in.down,held=in.held;
   changed=false;
   if(in.strengthStep){stereoStrength=clamp(stereoStrength+in.strengthStep/16.f,0,1);menuDirty=true;status="STEREO STRENGTH "+number(stereoStrength);}
@@ -329,8 +341,18 @@ int main(int argc,char** argv){
    if(scene.camera.yaw< -3.14159265f)scene.camera.yaw+=6.2831853f;
    scene.camera.pitch=clamp(scene.camera.pitch+pitch*dt*1.3f+lookPitch,-1.5f,1.5f);
    Rays basis(scene);float speed=scene.camera.speed*cameraSpeedScale(scene)*dt*(held&KEY_X?3:1);
-   Vec moved=scene.camera.position+(basis.forward*forward+basis.right*strafe+Vec{0,vertical,0})*speed;
-   if(std::isfinite(moved.x)&&std::isfinite(moved.y)&&std::isfinite(moved.z))scene.camera.position=moved;
+   Vec delta=(basis.forward*forward+basis.right*strafe+Vec{0,vertical,0})*speed;
+   // Keep outside the surface: never step further than half the distance estimate; if the new position looks wrong, halve the step.
+   double nearest=surfaceDistance(scene);float length=delta.length();
+   if(nearest>0&&length>.5*nearest)delta=delta*float(.5*nearest/length);
+   DVec origin=scene.camera.position;
+   for(int attempt=0;attempt<8&&length>0;++attempt){
+    DVec moved=origin+DVec(delta);
+    if(!std::isfinite(moved.x)||!std::isfinite(moved.y)||!std::isfinite(moved.z))break;
+    scene.camera.position=moved;double now2=surfaceDistance(scene);
+    if(nearest<=0||(now2>0&&now2>=.1*nearest))break;
+    scene.camera.position=origin;delta=delta*.5f;
+   }
   }
   // MATCH WINDOW follows the render view once its size has been stable for a moment.
   if(resIndex==MatchWindow){int w=std::max(1,lay.vw),h=std::max(1,lay.vh);
@@ -383,14 +405,20 @@ int main(int argc,char** argv){
      if(end!=input.c_str()&&*end=='\0'&&errno==0&&n>=1&&n<=(1<<20))set(int(n));else status="INVALID INTEGER / RANGE";}}});
   };
   auto boolean=[&](std::string label,bool& v){auto fn=[&](){v=!v;changed=true;};fields.push_back({{label,v?"ON":"OFF"},[fn](int){fn();},fn});};
+  // Double-precision number row (camera position). The D-pad / wheel step is proportional to the distance to the surface.
+  auto realD=[&](std::string label,double& v,float step){
+   fields.push_back({{label,number(float(v))},[&,step](int d){double n=v+d*double(step)*adjustScale*std::fmax(1e-12,std::fmin(1.0,double(cameraSpeedScale(scene))));if(std::isfinite(n))v=n;changed=true;},
+    [&,label](){char b[40];std::snprintf(b,sizeof(b),"%.17g",v);std::string input=b;if(keyboard(label,input)){char* end=nullptr;errno=0;double n=std::strtod(input.c_str(),&end);
+     if(end!=input.c_str()&&*end=='\0'&&errno==0&&std::isfinite(n)){v=n;changed=true;}else status="INVALID NUMBER / RANGE";}} });
+  };
   // PC-only rows: cycle through named values; `scene` is untouched unless render parameters change.
   auto cycle=[&](std::string label,std::string value,std::function<void(int)> fn){fields.push_back({{label,value},[&,fn](int d){fn(d);menuDirty=true;},[&,fn](){fn(1);menuDirty=true;}});};
   if(tab==0){for(int i=0;i<PresetCount;++i)action(presetName(i),presetIndex==i?"CURRENT":"A LOAD",[&,i](){loadPreset(i);changed=true;status="PRESET LOADED";});}
   else if(tab==1){Settings& v=scene.settings;
    boolean("QUALITY MODE",v.quality);blocks("PREVIEW BLOCK",v.previewBlock);blocks("STILL BLOCK",v.stillBlock);
    const char* scaling[]={"NEAREST","BILINEAR","BICUBIC"};fields.push_back({{"UPSCALING",scaling[v.upscale]},[&](int d){v.upscale=(v.upscale+d+3)%3;changed=true;},{}});integer("INTERLACE LANES",v.interlace,1,1,8);
-   integer("RAY STEPS",v.steps,8,1,1);real("HIT EPSILON",v.epsilon,.0005f,.000001f,.05f);boolean("ZOOM PRECISION EXP",v.adaptivePrecision);real("MIN HIT EPSILON",v.minEpsilon,.000001f,.000001f,.001f);real("PIXEL TOLERANCE",v.pixelTolerance,.05f,.05f,2);real("STEP SAFETY",v.safety,.05f,.05f,1);
-   real("FAR CLIP",v.farClip,1,1,100000);real("FRAME BUDGET MS",v.budgetMs,1,1,100);boolean("AUTO REFINE",v.autoRefine);boolean("ADAPT DETAIL EXP",v.adaptiveDetail);integer("MOVE ITERATIONS",v.previewIterations,1,1,256);integer("DETAIL ITERATION CAP",v.detailIterations,1,1,256);
+   integer("RAY STEPS",v.steps,8,1,1);real("HIT EPSILON",v.epsilon,.0005f,.000001f,.05f);boolean("ZOOM PRECISION EXP",v.adaptivePrecision);cycle("PRECISION MODE",v.precisionMode==0?"AUTO":v.precisionMode==1?"FLOAT":"DOUBLE",[&](int d){v.precisionMode=(v.precisionMode+d+3)%3;changed=true;});real("MIN HIT EPSILON",v.minEpsilon,.000001f,.000001f,.001f);real("PIXEL TOLERANCE",v.pixelTolerance,.05f,.05f,2);real("STEP SAFETY",v.safety,.05f,.05f,1);
+   real("FAR CLIP",v.farClip,1,1,100000);real("FRAME BUDGET MS",v.budgetMs,1,1,100);boolean("AUTO REFINE",v.autoRefine);integer("REFINE SAMPLES",v.refineSamples,1,1,1);boolean("ADAPT DETAIL EXP",v.adaptiveDetail);integer("MOVE ITERATIONS",v.previewIterations,1,1,1);integer("DETAIL ITERATION CAP",v.detailIterations,1,1,1);
    boolean("DEPTH OF FIELD",v.dof);real("LENS APERTURE",v.aperture,.01f,0,100);real("FOCUS DISTANCE",v.focusDistance,.1f,.001f,10000);integer("LENS SAMPLES",v.dofSamples,1,1,1);
    action("FOCUS AT CONVERGENCE","A MATCH DISTANCE",[&](){v.focusDistance=v.convergence;changed=true;});
    integer("QUALITY SAMPLES",v.samples,1,1,1);integer("AO SAMPLES",v.ao,1,0,64);integer("SHADOW STEPS",v.shadow,4,0,4096);
@@ -484,7 +512,7 @@ int main(int argc,char** argv){
    integer("INDIRECT SAMPLES",v.giSamples,1,0,64);integer("INDIRECT STEPS",v.giSteps,4,4,4096);
    real("INDIRECT STRENGTH",v.giStrength,.1f,0,20);real("INDIRECT RANGE",v.giRange,.1f,.1f,10000);colorField("SKY COLOR",v.skyColor);
    real("SPECULAR",v.specular,.05f,0,1);real("FOG DENSITY",v.fog,.01f,0,1);
-   real("CAMERA X",scene.camera.position.x,.1f,-1e6f,1e6f);real("CAMERA Y",scene.camera.position.y,.1f,-1e6f,1e6f);real("CAMERA Z",scene.camera.position.z,.1f,-1e6f,1e6f);
+   realD("CAMERA X",scene.camera.position.x,.1f);realD("CAMERA Y",scene.camera.position.y,.1f);realD("CAMERA Z",scene.camera.position.z,.1f);
    real("CAMERA YAW",scene.camera.yaw,.1f,-6.3f,6.3f);real("CAMERA PITCH",scene.camera.pitch,.1f,-1.5f,1.5f);
   }else{
    action("SAVE SCREENSHOT","F12 / A JPEG-MPO",[&](){screenshotRequested=true;});
@@ -514,8 +542,9 @@ int main(int argc,char** argv){
    action("LAST REALTIME FRAME MS",!useGpu&&renderer.lastRealtimeFrameBlock()?number(renderer.lastRealtimeFrameMs()):"NOT COMPLETED",[](){});
    action("LAST REALTIME SCALE",std::to_string(renderer.lastRealtimeFrameBlock())+"X",[](){});
    action("UI FRAME / TRACE MS",number(useGpu?float(fpsMs):renderer.measuredFrameMs())+" / "+number(workMs),[](){});
+   action("PRECISION",scene.settings.deepDouble?"DOUBLE (CPU)":"FLOAT",[](){});
    action("RENDER SIZE / FPS",std::to_string(W)+"X"+std::to_string(H)+" / "+number(float(1000/std::max(1.0,fpsMs))),[](){});
-   action("LIGHTING PASSES DONE",std::to_string(renderer.accumulatedPasses())+" / "+std::to_string(scene.settings.lightingPasses),[](){});
+   action("REFINE / LIGHT PASSES",std::to_string(renderer.accumulatedPasses())+" / "+std::to_string(Renderer::passTarget(scene.settings)),[](){});
    action("RAYS / DE QUERIES",std::to_string(renderer.profile().rays)+" / "+std::to_string(renderer.profile().distanceQueries),[](){});
    action("GI CELLS SKIPPED",std::to_string(renderer.profile().lightingSkipped),[](){});
    action("DEPTH STARTS / RAY RETRIES",std::to_string(renderer.profile().depthStarts)+" / "+std::to_string(renderer.profile().budgetRetries),[](){});
@@ -555,6 +584,8 @@ int main(int argc,char** argv){
   }
   if(activate&&fields[selected].activate)fields[selected].activate();
   if(changed){std::string error;if(!scene.formula.validate(error)){if(before)scene=*before;stageIndex=beforeStage;status=error;}}
+  {Settings& v=scene.settings;bool deepNow=v.precisionMode==2?true:v.precisionMode==1?false:(v.deepDouble?needsDoublePrecision(scene,2):needsDoublePrecision(scene,1));
+   if(deepNow!=v.deepDouble){v.deepDouble=deepNow;changed=true;status=deepNow?"PRECISION: DOUBLE (DEEP ZOOM)":"PRECISION: FLOAT";menuDirty=true;}}
   if(changed||applyPending){if(changed)forceCpu=false;reconcile();}
   float previousSlider=slider;
   bool sliderChanged=sliderControl.update(scene.settings,stereoMode==StereoOff?0:stereoStrength);slider=sliderControl.strength;
@@ -628,6 +659,8 @@ int main(int argc,char** argv){
    ++panelRevision;std::vector<Row> rows;rows.reserve(fields.size());for(const Field& f:fields)rows.push_back(f.row);
    int block=useGpu?(moving?motionDiv:1):renderer.currentBlock();float progress=useGpu?(gpuDone?1.f:.5f):renderer.progress(scene);
    drawPanel(bottom,tab,selected,rows,status,presetIndex<0?"CUSTOM SCENE":presetName(presetIndex),block,progress,scene.settings.quality,workMs);
+   {char info[40];std::snprintf(info,sizeof(info),"%dX %.0FMS P%d/%d %d%%%s",block,workMs,useGpu?0:renderer.accumulatedPasses(),Renderer::passTarget(scene.settings),int(progress*100),scene.settings.deepDouble?" D":"");
+    bottom.rect(188,19,126,10,{36,32,24});bottom.text(190,21,info,{127,127,109});}
    if(tab==4){Settings gradient=scene.settings;gradient.gradientScale=1;gradient.gradientOffset=0;gradient.gradientRepeat=false;gradient.boundedGradient=false;
     for(int x=0;x<300;++x){Vec c=gradientColor(gradient,float(x)/299);bottom.rect(10+x,67,1,3,{uint8_t(c.x*255),uint8_t(c.y*255),uint8_t(c.z*255)});}}
   }
@@ -638,9 +671,9 @@ int main(int argc,char** argv){
   fpsMs=fpsMs*.9+(nowMs()-frameStart)*.1;
   if(!useGpu)renderer.endFrame(scene,float(nowMs()-frameStart),workMs,renderer.jobs()-beforeJobs);
   if(exitRequested)break;
-  if(headless&&int(frameNumber)>=args.frames&&(useGpu?gpuDone:renderer.complete())&&!motion&&!benchmarkActive)break;
-  if(headless&&frameNumber>40000){std::fprintf(stderr,"selftest: render did not complete\n");exitCode=3;break;}
-  if(headless&&nowMs()>180000){std::fprintf(stderr,"selftest: timeout\n");exitCode=3;break;}
+  if(headless&&int(frameNumber)>=args.frames&&(useGpu?gpuDone:renderer.complete())&&!motion&&!benchmarkActive&&dive.index>=args.dive.size())break;
+  if(headless&&frameNumber>400000){std::fprintf(stderr,"selftest: render did not complete\n");exitCode=3;break;}
+  if(headless&&nowMs()>(args.dive.empty()?180000:1500000)){std::fprintf(stderr,"selftest: timeout\n");exitCode=3;break;}
  }
  if(headless&&exitCode==0){
   std::vector<Color> img;int w=0,h=0;std::string error;

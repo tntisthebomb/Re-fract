@@ -71,6 +71,28 @@ Left out as 3DS-only: the GPU surface (mesh) cache rows, `CAPTURE GPU SURFACE`, 
 On the GPU backend the CPU-only conveniences (`UPSCALING` live re-scaling, instant recolour, `AUTO FIT GRADIENT`)
 are not available; scenes using features the GPU renderer does not implement render on the CPU (see above).
 
+## Deep zoom and AUTO REFINE
+
+* **AUTO REFINE** starts the moment the camera stops: blocks 16 / 8 / 4 / 2 / 1, then it keeps adding jittered
+  full-resolution passes (R2 sequence, averaged in a float accumulation buffer) up to `REFINE SAMPLES` (RENDER
+  tab, default 16, any integer; 1 = off). Any change restarts it cleanly; the panel header shows `P<done>/<total>`.
+  While it is active the instant-recolour shortcut is off (colour edits re-render); set `REFINE SAMPLES` to 1 to get it back.
+* **ZOOM PRECISION** (on by default): the hit tolerance, normal / AO / shadow offsets are the pixel footprint at the
+  hit distance (`pixelTolerance * 2 t tan(fov/2) / H`), floored only by `MIN HIT EPSILON` (default 1e-15) and the
+  number-format resolution. **ADAPT DETAIL** (on by default) adds about log2(0.25 / distance) iterations when the
+  camera is close to the surface (`DETAIL ITERATION CAP`, default 200, unbounded) and uses `MOVE ITERATIONS` only while moving.
+* **Camera in double precision**: `Camera::position` is a double (`DVec`), scene files store 17 significant digits
+  (`REFRACT 11`, new `REFINE` line; older files still load). Camera move speed is proportional to the distance to the
+  surface with no floor (`MIN SPEED FRACTION` only applies when the estimate is invalid), a step is never longer than
+  half the distance estimate, and a step that lands too close to the surface is halved or rejected, so repeated
+  forward motion approaches the surface asymptotically without crossing it.
+* **Double-precision distance estimator**: when the pixel footprint at the nearest surface drops below
+  1e-5 x max(1, |position|) (hysteresis: leaves again at 2e-5) the CPU renderer switches to a double-precision
+  generic estimator (`distanceDouble`) with camera-relative rays; `PRECISION` in the FILES tab shows FLOAT / DOUBLE,
+  and `PRECISION MODE` (RENDER tab) can force AUTO / FLOAT / DOUBLE. Expression stages are still evaluated in float
+  inside the double path (their precision limits depth). The GPU backend is float only: while deep zoom needs double,
+  the app renders on the CPU (`DEEP ZOOM: CPU DOUBLE`) and returns to the GPU automatically when it is no longer needed.
+
 ## Parameter limits
 
 **There are no artificial parameter limits.** Every number row accepts any finite value when typed (`Enter`),
