@@ -226,8 +226,10 @@ static RenderResult sampleRay(const Scene& s,const Rays& rays,float x,float y,fl
   for(int j=0;j<o.giSamples;++j){
    float a=offsets[j%4][0],b=offsets[j%4][1];
    if(varied||o.giSamples>4){uint32_t index=sequence*uint32_t(o.giSamples)+j+1;
-    uint32_t hash=uint32_t(x)*1973u+uint32_t(y)*9277u;
-    float radius=std::sqrt(radicalInverse(index,2)),angle=6.2831853f*std::fmod(radicalInverse(index,3)+(hash&65535u)/65536.f,1.f);
+    // Per-pixel rotation of the (Halton) hemisphere pattern. It must be a real hash: the old linear hash (x*1973+y*9277)&65535
+    // is a lattice, so cells sharing the same fractional value sample identical directions and form diagonal line / hatch patterns.
+    float rotation=fogJitter(int(x),int(y),0x9e3779b9u);
+    float radius=std::sqrt(radicalInverse(index,2)),angle=6.2831853f*std::fmod(radicalInverse(index,3)+rotation,1.f);
     a=radius*std::cos(angle);b=radius*std::sin(angle);
    }
    Vec direction=u*a+v*b+n*std::sqrt(std::fmax(0.f,1-a*a-b*b));
@@ -550,6 +552,7 @@ void Renderer::step(const Scene& s,const Rays& rays,float slider){
    }
    done=true;cacheReady=!moving&&o.bloom<=0&&(!o.quality||o.samples==1)&&!o.adaptiveTiles&&!accumulate&&!(o.dof&&o.aperture>0);break;
   }continue;}
+  if(!moving&&scatterPasses)cell=int(scatterCell(uint32_t(cell),uint32_t(total)));
   int x=cell%nx*stride,y=cell/nx*stride;++index;int sampleBlock=block;
   if(moving&&o.foveated&&!o.quality){int gx=x/(2*block)*(2*block),gy=y/(2*block)*(2*block);float dx=(gx+block-W*.5f)/(W*.5f),dy=(gy+block-H*.5f)/(H*.5f);
    if(dx*dx+dy*dy>.35f){if(x!=gx||y!=gy){totals.skipped+=eyes;continue;}sampleBlock=block*2;}}

@@ -64,7 +64,7 @@ bool writePPM(const std::vector<Color>& image,int w,int h,const std::string& pat
  out<<"P6\n"<<w<<' '<<h<<"\n255\n";out.write(reinterpret_cast<const char*>(image.data()),std::streamsize(image.size()*3));
  out.close();if(!out){error="Image write failed";return false;}error="IMAGE SAVED";return true;
 }
-struct Args {int tab=0,select=0,stereo=0;std::string windowShot;int frames=0,move=0,preset=-1,width=0,height=0,wheel=0;std::vector<double> dive;std::string divePrefix,scenePath;bool legacy=false;std::vector<std::string> sets;bool selftest=false,cpu=false,gpu=false;std::string screenshot,panel;};
+struct Args {int tab=0,select=0,stereo=0;std::string windowShot;int frames=0,move=0,preset=-1,width=0,height=0,wheel=0;std::vector<double> dive;std::string divePrefix,scenePath;bool legacy=false;int snapFrame=0;std::vector<std::string> sets;bool selftest=false,cpu=false,gpu=false;std::string screenshot,panel;};
 Args parseArgs(int argc,char** argv){
  Args a;
  for(int i=1;i<argc;++i){std::string s=argv[i];auto next=[&]()->const char*{return i+1<argc?argv[++i]:"";};
@@ -80,6 +80,7 @@ Args parseArgs(int argc,char** argv){
   else if(s=="--dive-prefix")a.divePrefix=next();
   else if(s=="--scene")a.scenePath=next();
   else if(s=="--legacy")a.legacy=true;
+  else if(s=="--snap-frame")a.snapFrame=std::atoi(next());
   else if(s=="--set")a.sets.push_back(next());
   else if(s=="--window-shot")a.windowShot=next();
   else if(s=="--stereo"){std::string m=next();a.stereo=m=="sbs"?1:m=="ana"?2:0;}
@@ -150,7 +151,8 @@ int main(int argc,char** argv){
   // --legacy: the 3DS-era (corridors-lighting) defaults, for timing comparisons.
   if(args.legacy){Settings& v=scene.settings;v.adaptivePrecision=false;v.adaptiveDetail=false;v.minEpsilon=1e-6f;v.detailIterations=24;v.refineSamples=1;}
   for(const std::string& kv:args.sets){size_t eq=kv.find('=');if(eq==std::string::npos)continue;std::string k=kv.substr(0,eq);double val=std::atof(kv.c_str()+eq+1);Settings& v=scene.settings;
-   if(k=="adaptivePrecision")v.adaptivePrecision=val!=0;else if(k=="adaptiveDetail")v.adaptiveDetail=val!=0;else if(k=="refine")v.refineSamples=int(val);else if(k=="minEpsilon")v.minEpsilon=float(val);else if(k=="steps")v.steps=int(val);else if(k=="fog")v.fog=float(val);else if(k=="previewBlock")v.previewBlock=int(val);}
+   if(k=="adaptivePrecision")v.adaptivePrecision=val!=0;else if(k=="adaptiveDetail")v.adaptiveDetail=val!=0;else if(k=="refine")v.refineSamples=int(val);else if(k=="minEpsilon")v.minEpsilon=float(val);else if(k=="steps")v.steps=int(val);else if(k=="fog")v.fog=float(val);else if(k=="previewBlock")v.previewBlock=int(val);
+   else if(k=="progressive")v.progressiveLighting=val!=0;else if(k=="gi")v.giSamples=int(val);else if(k=="passes")v.lightingPasses=int(val);else if(k=="lightingBlock")v.lightingBlock=int(val);else if(k=="interlace")v.interlace=int(val);else if(k=="autoRefine")v.autoRefine=val!=0;else if(k=="separate")v.separateLighting=val!=0;else if(k=="adaptiveLighting")v.adaptiveLighting=val!=0;else if(k=="stereo")v.stereo=val!=0;else if(k=="stillBlock")v.stillBlock=int(val);else if(k=="ao")v.ao=int(val);else if(k=="scatter")scatterPasses=val!=0;else if(k=="shadow")v.shadow=int(val);}
   if(!args.scenePath.empty()){std::string e;if(loadScene(scene,args.scenePath,e)){presetIndex=-1;}else std::fprintf(stderr,"--scene: %s\n",e.c_str());}
  }
  // Resolve the active render size (clamped to the GL texture limit and a memory budget for the active backend).
@@ -703,6 +705,7 @@ int main(int argc,char** argv){
   if(screenshotRequested){screenshotRequested=false;takeScreenshot(activeStereo);menuDirty=true;}
   present(bottom);
   ++frameNumber;
+  if(headless&&args.snapFrame>0&&int(frameNumber)==args.snapFrame&&!args.screenshot.empty()){std::vector<Color> img;int w=0,h=0;std::string e;if(currentImage(0,img,w,h))writePPM(img,w,h,args.screenshot+".snap.ppm",e);}
   if(headless){double t=nowMs()-timingStart;if(timing.first<0)timing.first=t;if(timing.block1<0&&!useGpu&&renderer.currentBlock()==1)timing.block1=t;if(timing.pass1<0&&!useGpu&&renderer.accumulatedPasses()>=1)timing.pass1=t;if(timing.complete<0&&(useGpu?gpuDone:renderer.complete()))timing.complete=t;}
   wantWindowShot=!args.windowShot.empty()&&headless&&int(frameNumber)+1>=args.frames;
   fpsMs=fpsMs*.9+(nowMs()-frameStart)*.1;

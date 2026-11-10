@@ -146,6 +146,25 @@ struct Settings {
  float sunStrength=1,aperture=.03f,focusDistance=4;
  int dofSamples=4,lightingPasses=16,lightingBlock=4;
 };
+// Bijective scatter of the cell visiting order inside a pass (random-looking permutation of [0,n), O(1) memory: a 4-round Feistel
+// network on the next even power of two with cycle walking). Used for still / refine / progressive passes so that the cells updated
+// first (the interlace lanes) are spread out as dither instead of forming rows, columns or diagonal lines (cell = lane + index*lanes
+// is column-aligned whenever the cell grid width is a multiple of the lane count).
+inline bool scatterPasses=true; // test switch: false restores the raster lane order
+inline uint32_t scatterCell(uint32_t i,uint32_t n){
+ if(n<=2)return i;
+ uint32_t bits=1;while((1u<<bits)<n)++bits;if(bits&1)++bits;
+ const uint32_t half=bits/2,mask=(1u<<half)-1;
+ do{
+  uint32_t l=i>>half,r=i&mask;
+  for(uint32_t round=0;round<4;++round){
+   uint32_t h=(r+round*0x9e3779b9u)*0x7feb352du;h^=h>>15;h*=0x846ca68bu;h^=h>>16;
+   uint32_t next=r;r=l^(h&mask);l=next;
+  }
+  i=(l<<half)|r;
+ }while(i>=n);
+ return i;
+}
 // Deterministic per-pixel jitter in [0,1) for fog sample placement; the GPU shader mirrors this integer hash exactly.
 inline float fogJitter(int px,int py,uint32_t pass){
  uint32_t h=uint32_t(px)*73856093u^uint32_t(py)*19349663u^(pass*83492791u);

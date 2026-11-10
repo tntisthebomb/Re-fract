@@ -113,6 +113,7 @@ int main(int argc,char** argv){
  for(const Case& c:cases){
   ++ci;
   if(*filter&&!std::strstr(c.name,filter))continue;
+  if(std::getenv("GC_TRACE"))std::fprintf(stderr,"[case %s]\n",c.name);
   const int rw=c.big?480:160,rh=c.big?270:96;
   if(W!=rw||H!=rh){W=rw;H=rh;if(!gpu.resize(W,H)){std::printf("resize failed\n");return 1;}}
   Scene s;s.formula=preset(c.preset);s.camera=presetCamera(c.preset);s.settings=presetSettings(c.preset);if(!c.big)s.settings.refineSamples=1;c.tweak(s);

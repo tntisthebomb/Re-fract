@@ -84,6 +84,15 @@ are not available; scenes using features the GPU renderer does not implement ren
 * `--legacy` starts with the 3DS-era defaults (no zoom precision / adaptive detail / refine passes) and the headless self-test
   prints `timing: first-frame / block1-started / first-full-pass / complete` in ms, for comparing defaults.
 
+## Interlaced passes and progressive lighting
+
+Still / refine / progressive-lighting passes visit the cell grid in a scattered (bijective, hash-based) order instead of
+`cell = lane + index*lanes`, which updates whole columns first whenever the grid width is a multiple of `INTERLACE LANES`
+(vertical lines forming while progressive lighting accumulates; the 3DS original has the same behaviour). The moving preview
+keeps the raster lane order. The GI hemisphere rotation per pixel uses a real hash (`fogJitter`) instead of a linear one.
+Regression test: `tests/lighting_stripes.cpp` (build line at the top of the file); `--set scatter=0` restores the old order.
+`--set progressive=1 --set gi=N --set passes=N ...` and `--snap-frame N` help reproduce such issues headless.
+
 ## Deep zoom and AUTO REFINE
 
 * **AUTO REFINE** starts the moment the camera stops: blocks 16 / 8 / 4 / 2 / 1, then it keeps adding jittered
