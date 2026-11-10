@@ -117,6 +117,7 @@ int main(int argc,char** argv){
   int guard=0;while(!gpu.render(s,W,H,1000)&&++guard<100000);
   double gms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
   std::vector<Color> g;int gw,gh;gpu.readback(0,g,gw,gh);
+  if(std::getenv("GPU_ONLY")){std::printf("%-26s gpu only: %.0f ms, %d render() calls\n",c.name,gms,guard+1);continue;} // stress runs: skip the slow CPU reference
   Rays rays(s);std::vector<Color> cpu(size_t(W)*H);
   unsigned nt=std::max(1u,std::thread::hardware_concurrency());std::vector<std::thread> pool;
   for(unsigned t=0;t<nt;++t)pool.emplace_back([&,t]{
