@@ -97,7 +97,7 @@ void drawPanel(Canvas& c,int tab,int selected,const std::vector<Row>& rows,const
   c.text(170,y,rows[i].value.substr(0,23),bone);
  }
  c.rect(6,196,308,1,rust);c.text(10,202,status.substr(0,50),rust);
- c.text(10,215,"D-PAD EDIT  A TYPE  SELECT TAB",bone);
- c.text(10,228,"Y QUALITY  B RESET VIEW  START EXIT",dim);
+ c.text(10,215,"IJKL EDIT  ENTER TYPE  SPACE TAB",bone);
+ c.text(10,228,"Y QUALITY  B RESET VIEW  ESC EXIT",dim);
 }
 }
