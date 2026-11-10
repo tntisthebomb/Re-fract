@@ -144,15 +144,20 @@ void genStage(std::string& o,const Formula& f,const Stage& s,int i){
  o+="  }\n  if(!(fin3(z)&&fin(dr))||dr>1e30){FAIL}\n  trap=min(trap,dot(z,z));\n";
 }
 
-std::string generateFragment(const Formula& f){
+// Feature bits compiled into the shader so disabled features cost nothing per pixel (toggling one recompiles).
+enum Feature:unsigned {FeatGI=1,FeatFog=2,FeatPoint=4,FeatLens=8};
+
+std::string generateFragment(const Formula& f,unsigned feat){
  int n=std::max(1,f.activeCount);
  std::string N=std::to_string(n),o;
  o+="#version 330 core\n";
+ o+="#define F_GI "+std::to_string((feat&FeatGI)?1:0)+"\n#define F_FOG "+std::to_string((feat&FeatFog)?1:0)+
+    "\n#define F_POINT "+std::to_string((feat&FeatPoint)?1:0)+"\n#define F_LENS "+std::to_string((feat&FeatLens)?1:0)+"\n";
  o+="layout(location=0) out vec4 outColor;\n";
  // ---- uniforms
  o+="uniform vec2 uRes;uniform vec3 uOrigin,uForward,uRight,uUp,uLight;\n"
    "uniform float uTangent,uConv,uEye,uFar,uEps,uSafety,uFog,uExposure,uSpecular,uSun,uEmission,uRelax;\n"
-   "uniform int uSteps,uQuality,uCount,uPasses,uJitter,uAo,uShadow,uIter,uBlock,uLens,uVaried,uLinear,uAdaptive;\n"
+   "uniform int uSteps,uQuality,uCount,uPass,uOutMode,uJitter,uAo,uShadow,uIter,uBlock,uLens,uVaried,uLinear,uAdaptive;\n"
    "uniform float uMinEps,uPixTol,uAperture,uFocus;\n"
    "uniform vec3 uSky;\n"
    "uniform int uFogOn,uFogSteps,uFogShadow;uniform float uFogG,uFogAmbient,uFogScatter;uniform vec3 uFogColor;\n"
@@ -274,6 +279,7 @@ float fogJitter(uint px,uint py,uint pass){ // rf::fogJitter
  };
  // ---- point lights
  o+=withRepeat(R"(
+#if F_POINT
 void pointLighting(vec3 position,vec3 normal,float offset,vec3 view,bool highlights,inout vec3 illumination,inout vec3 gloss){
  for(int i=0;i<2;++i){
   if((uPointMask&(1<<i))==0)continue;
@@ -300,9 +306,11 @@ void pointLighting(vec3 position,vec3 normal,float offset,vec3 view,bool highlig
   illumination+=uPointCol[i]*(lambert*power);gloss+=uPointCol[i]*(specular*power);
  }
 }
+#endif
 )","direction","offset");
  // ---- indirect lighting (GI)
  o+=withRepeat(R"(
+#if F_GI
 const vec2 GIOFF[4]=vec2[4](vec2(0.35,0.35),vec2(-0.65,0.25),vec2(0.25,-0.65),vec2(-0.45,-0.45));
 vec3 indirectLight(vec3 p,vec3 n,float e,float x,float y,uint seq){
  vec3 axis=abs(n.z)<0.9?vec3(0.0,0.0,1.0):vec3(0.0,1.0,0.0);
@@ -323,7 +331,9 @@ vec3 indirectLight(vec3 p,vec3 n,float e,float x,float y,uint seq){
    if(d<e){
     vec3 bn=tetraNormal(q,e);
     vec3 bounce=gradientColor(tr),local=vec3(0.0),unused=vec3(0.0);
+#if F_POINT
     if(uPointMask!=0)pointLighting(q,bn,e,direction,false,local,unused);
+#endif
     incoming+=bounce*(0.15+0.85*max(0.0,dot(bn,uLight))*uSun+uEmission)+bounce*local;
     bounced=true;break;
    }
@@ -336,9 +346,11 @@ vec3 indirectLight(vec3 p,vec3 n,float e,float x,float y,uint seq){
  }
  return incoming*(uGiStrength/float(uGiSamples));
 }
+#endif
 )","direction","e");
  // ---- volumetric fog (mirrors the VOLUMETRIC FOG SPEC in engine/renderer.cpp)
  o+=withRepeat(R"(
+#if F_FOG
 float fogPhase(float c){float g=uFogG,g2=g*g;return (1.0-g2)/pow(max(1e-6,1.0+g2-2.0*g*c),1.5);}
 float fogVis(vec3 P,vec3 L,float maxDist,float eps){
  if(uFogShadow<=0)return 1.0;
@@ -377,6 +389,7 @@ vec3 fogMarch(float T,vec3 origin,vec3 dir,float x,float y,uint seq,out float tr
  }
  return light;
 }
+#endif
 )","L","eps");
  // ---- ray marcher
  o+=R"(
@@ -387,12 +400,14 @@ vec3 sampleRay(float x,float y,uint seq,out bool mg){
  float px=(2.0*x/uRes.x-1.0)*uTangent*aspect-uEye/uConv;
  float py=(1.0-2.0*y/uRes.y)*uTangent;
  vec3 origin=uOrigin,dir=unit(uForward+uRight*px+uUp*py);
+#if F_LENS
  if(uLens!=0){ // thin lens, Halton samples keyed by sequence
   float radius=sqrt(radical(seq+1u,2u)),angle=6.2831853*radical(seq+1u,3u);
   vec3 focus=origin+dir*(uFocus/max(1e-6,dot(dir,uForward)));
   origin+=(uRight*(radius*cos(angle))+uUp*(radius*sin(angle)))*uAperture;
   dir=unit(focus-origin);
  }
+#endif
  float t=0.0,trap=0.0,d,tr;bool hit=false;
  float previousT=0.0,previousD=0.0,advance=0.0;bool relaxed=false;
  for(int i=0;i<uSteps;++i){
@@ -413,7 +428,9 @@ vec3 sampleRay(float x,float y,uint seq,out bool mg){
  o+=R"(  t+=advance;
  }
  if(!hit){
+#if F_FOG
   if(uFogOn!=0){float tr;vec3 fl=fogMarch(uFar,origin,dir,x,y,seq,tr);return (uSky*tr+fl)*uExposure;}
+#endif
   return uSky*uExposure;
  }
  vec3 p=origin+dir*t;
@@ -433,13 +450,17 @@ vec3 sampleRay(float x,float y,uint seq,out bool mg){
  }
  float spec=baseSpec*shadow*uSun;
  float lighting=clamp(ao,0.15,1.0)*(0.22+0.78*diffuse*clamp(shadow,0.15,1.0)*uSun);
- vec3 localD=vec3(0.0),localS=vec3(0.0);
- if(uPointMask!=0)pointLighting(p,n,e,dir,true,localD,localS);
  vec3 albedo=gradientColor(trap);
  vec3 color=albedo*(lighting+uEmission)+vec3(spec);
- if(uPointMask!=0)color+=albedo*localD+localS;
+#if F_POINT
+ if(uPointMask!=0){vec3 localD=vec3(0.0),localS=vec3(0.0);pointLighting(p,n,e,dir,true,localD,localS);color+=albedo*localD+localS;}
+#endif
+#if F_GI
  if(uGiSamples>0&&uGiStrength>0.0)color+=albedo*indirectLight(p,n,e,x,y,seq);
+#endif
+#if F_FOG
  if(uFogOn!=0){float tr;vec3 fl=fogMarch(t,origin,dir,x,y,seq,tr);return (color*tr+fl)*uExposure;}
+#endif
  float fog=exp(-t*uFog);
  return (color*fog+uSky*(1.0-fog))*uExposure;
 }
@@ -450,17 +471,16 @@ void main(){
  float B=float(uBlock);
  xl=floor(xl/B)*B;rowTop=floor(rowTop/B)*B; // coarse final render: one ray per block cell
  ivec3 intSum=ivec3(0);vec3 radSum=vec3(0.0);
- for(int ps=0;ps<uPasses;++ps){
-  for(int i=0;i<uCount;++i){
-   float jx,jy;pattern(i,uCount,jx,jy);
-   if(uJitter!=0&&uCount==1)pattern(ps,1073741824,jx,jy); // progressive pass jitter, as renderJob()
-   bool mg;
-   vec3 rad=sampleRay(min(uRes.x-0.5,xl+B*jx),min(uRes.y-0.5,rowTop+B*jy),uint(ps*uCount+i),mg);
-   if(mg){intSum+=ivec3(180,20,90);radSum+=vec3(180.0,20.0,90.0)*(1.0/255.0);}
-   else{intSum+=quantize(rad);radSum+=rad;}
-  }
+ for(int i=0;i<uCount;++i){
+  float jx,jy;pattern(i,uCount,jx,jy);
+  if(uJitter!=0&&uCount==1)pattern(uPass,1073741824,jx,jy); // progressive pass jitter, as renderJob()
+  bool mg;
+  vec3 rad=sampleRay(min(uRes.x-0.5,xl+B*jx),min(uRes.y-0.5,rowTop+B*jy),uint(uPass*uCount+i),mg);
+  if(mg){intSum+=ivec3(180,20,90);radSum+=vec3(180.0,20.0,90.0)*(1.0/255.0);}
+  else{intSum+=quantize(rad);radSum+=rad;}
  }
- ivec3 q=uLinear!=0?quantize(radSum*(1.0/float(uCount*uPasses))):intSum/uCount;
+ if(uOutMode!=0){outColor=vec4(radSum*(1.0/float(uCount)),1.0);return;} // accumulation pass: linear radiance
+ ivec3 q=uLinear!=0?quantize(radSum*(1.0/float(uCount))):intSum/uCount;
  outColor=vec4(vec3(q)/255.0,1.0);
 }
 )";
@@ -534,6 +554,24 @@ bool lightingProgressive(const Settings& s){return s.progressiveLighting&&((s.gi
 bool refineActive(const Settings& s){return s.autoRefine&&!s.quality&&s.refineSamples>1&&!lightingProgressive(s);}
 bool volumetricActive(const Settings& s){return s.volumetricFog&&s.fog>0&&std::isfinite(s.fog);}
 bool separateActive(const Settings& s){return !volumetricActive(s)&&s.separateLighting&&!s.quality&&!(s.dof&&s.aperture>0)&&s.giSamples>0&&s.giStrength>0;}
+// Passes the finished image is the mean of (1 = single draw straight into the display target).
+int passCount(const Settings& s){return lightingProgressive(s)?std::max(1,s.lightingPasses):refineActive(s)?std::max(1,s.refineSamples):1;}
+unsigned featuresOf(const Scene& scene){
+ const Settings& o=scene.settings;unsigned f=0;
+ if(o.giSamples>0&&o.giStrength>0)f|=FeatGI;
+ if(volumetricActive(o))f|=FeatFog;
+ for(const PointLight& l:o.pointLights)if(l.enabled&&l.intensity>0)f|=FeatPoint;
+ if(o.dof&&o.aperture>0)f|=FeatLens;
+ return f;
+}
+const char* kResolveFragment=R"(#version 330 core
+layout(location=0) out vec4 outColor;
+uniform sampler2D uAccum;uniform float uInv;
+void main(){
+ vec3 v=texelFetch(uAccum,ivec2(gl_FragCoord.xy),0).rgb*uInv;
+ outColor=vec4(vec3(ivec3(clamp(v,0.0,1.0)*255.0))/255.0,1.0);
+}
+)";
 // Cell size of the finished CPU image (the progressive refinement ends at this block).
 int finalBlock(const Settings& s){return s.quality?1:std::max(1,s.autoRefine?s.stillBlock:std::max(s.previewBlock,s.stillBlock));}
 }
@@ -546,6 +584,9 @@ struct GpuRenderer::Impl {
  GLuint tex[2]={0,0},fbo[2]={0,0};       // presented image per eye
  GLuint baseTex[2]={0,0},baseFbo[2]={0,0}; // scene render target while bloom is on
  GLuint tmpTex=0,tmpFbo=0;                // bloom horizontal pass (RGBA16F)
+ GLuint accumTex[2]={0,0},accumFbo[2]={0,0}; // running sum of pass radiance (RGBA32F), only when passes>1
+ Program resolveProgram;
+ int totalPasses=1,passIndex[2]={0,0};bool accumMode=false;
  int width=0,height=0;
  int eyeCount=1;float eyeOffset=0;
  bool active=false;
@@ -562,6 +603,10 @@ struct GpuRenderer::Impl {
    if(tex[e]){glDeleteTextures(1,&tex[e]);tex[e]=0;}
    if(baseFbo[e]){glDeleteFramebuffers(1,&baseFbo[e]);baseFbo[e]=0;}
    if(baseTex[e]){glDeleteTextures(1,&baseTex[e]);baseTex[e]=0;}
+  }
+  for(int e=0;e<2;++e){
+   if(accumFbo[e]){glDeleteFramebuffers(1,&accumFbo[e]);accumFbo[e]=0;}
+   if(accumTex[e]){glDeleteTextures(1,&accumTex[e]);accumTex[e]=0;}
   }
   if(tmpFbo){glDeleteFramebuffers(1,&tmpFbo);tmpFbo=0;}
   if(tmpTex){glDeleteTextures(1,&tmpTex);tmpTex=0;}
@@ -591,6 +636,21 @@ struct GpuRenderer::Impl {
   }
   if(!bloomProgram.id&&!build(bloomProgram,kBloomFragment,error))return false;
   return true;
+ }
+ bool ensureAccum(std::string& error){
+  if(!accumTex[0]){
+   for(int e=0;e<2;++e)if(!makeTarget(accumTex[e],accumFbo[e],GL_RGBA32F,GL_FLOAT,GL_NEAREST)){error="accumulation targets";return false;}
+   glBindFramebuffer(GL_FRAMEBUFFER,0);glBindTexture(GL_TEXTURE_2D,0);
+  }
+  if(!resolveProgram.id&&!build(resolveProgram,kResolveFragment,error))return false;
+  return true;
+ }
+ void resolve(int e,int passes){ // display = quantize(sum/passes), restricted to the rendered region
+  glUseProgram(resolveProgram.id);glDisable(GL_BLEND);glEnable(GL_SCISSOR_TEST);glScissor(0,0,renderW,renderH);
+  glBindFramebuffer(GL_FRAMEBUFFER,sceneFbo(e));glViewport(0,0,width,height);
+  glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,accumTex[e]);
+  glUniform1i(resolveProgram.loc("uAccum"),0);glUniform1f(resolveProgram.loc("uInv"),1.f/float(passes));
+  glDrawArrays(GL_TRIANGLES,0,3);glBindTexture(GL_TEXTURE_2D,0);
  }
  void applyBloom(int e,float strength);
  void setUniforms(const Scene& scene,int rw,int rh);
@@ -632,6 +692,8 @@ void GpuRenderer::shutdown(){
  impl->destroyTargets();
  for(auto& kv:impl->programs)if(kv.second.id)glDeleteProgram(kv.second.id);
  impl->programs.clear();impl->current=nullptr;
+ if(impl->resolveProgram.id)glDeleteProgram(impl->resolveProgram.id);
+ impl->resolveProgram=Program();
  if(impl->bloomProgram.id)glDeleteProgram(impl->bloomProgram.id);
  impl->bloomProgram=Program();
  if(impl->vao)glDeleteVertexArrays(1,&impl->vao);
@@ -657,7 +719,7 @@ bool GpuRenderer::begin(const Scene& scene,float eyeOffset,std::string& error){
  const Formula& f=scene.formula;
  if(f.activeCount<1||f.activeCount>MaxStages){error="formula has no active stages (call Formula::validate)";return false;}
  if(m.width<1){error="resize() has not been called";return false;}
- std::string src=generateFragment(f);
+ std::string src=generateFragment(f,featuresOf(scene));
  auto it=m.programs.find(src);
  if(it==m.programs.end()){
   Program prog;if(!build(prog,src,error))return false;
@@ -673,6 +735,9 @@ bool GpuRenderer::begin(const Scene& scene,float eyeOffset,std::string& error){
   glBindFramebuffer(GL_FRAMEBUFFER,0);glBindVertexArray(0);glUseProgram(0);
  }
  m.current=&it->second;
+ m.totalPasses=passCount(scene.settings);m.accumMode=m.totalPasses>1;
+ if(m.accumMode&&!m.ensureAccum(error))return false;
+ m.passIndex[0]=m.passIndex[1]=0;
  m.bloomOn=scene.settings.bloom>0;
  if(m.bloomOn&&!m.ensureBloom(error)){m.bloomOn=false;return false;}
  m.eyeOffset=eyeOffset;m.eyeCount=eyeOffset==0?1:2;
@@ -706,8 +771,8 @@ void GpuRenderer::Impl::setUniforms(const Scene& scene,int rw,int rh){
  if(lens)count=std::max(count,std::max(1,o.dofSamples));
  bool accumulate=(prog||refine)&&!split;
  u1i("uCount",count);u1i("uLens",lens?1:0);u1f("uAperture",o.aperture);u1f("uFocus",o.focusDistance);
- u1i("uVaried",(lens||accumulate||split)?1:0);u1i("uLinear",(lens||accumulate)?1:0);
- u1i("uPasses",prog?std::max(1,o.lightingPasses):refine?std::max(1,o.refineSamples):1);u1i("uJitter",accumulate?1:0);
+ u1i("uVaried",(lens||accumulate||split)?1:0);u1i("uLinear",(lens||accumulate)?1:0);u1i("uOutMode",accumMode?1:0);
+ u1i("uJitter",accumulate?1:0);
  u1i("uBlock",finalBlock(o));
  u1i("uGiSamples",std::max(0,o.giSamples));u1i("uGiSteps",std::max(0,o.giSteps));
  u1f("uGiStrength",o.giStrength);u1f("uGiRange",o.giRange);
@@ -772,52 +837,56 @@ bool GpuRenderer::render(const Scene& scene,int renderW,int renderH,float budget
  renderW=std::max(1,std::min(renderW,m.width));renderH=std::max(1,std::min(renderH,m.height));
  if(m.renderW!=renderW||m.renderH!=renderH){ // region changed mid-image: restart it
   m.renderW=renderW;m.renderH=renderH;m.rowsDone[0]=m.rowsDone[1]=0;m.colsDone[0]=m.colsDone[1]=0;
-  m.bloomDone[0]=m.bloomDone[1]=false;}
+  m.passIndex[0]=m.passIndex[1]=0;m.bloomDone[0]=m.bloomDone[1]=false;}
  auto t0=Clock::now();
- glUseProgram(m.current->id);glBindVertexArray(m.vao);
- glDisable(GL_DEPTH_TEST);glDisable(GL_BLEND);glDisable(GL_CULL_FACE);glEnable(GL_SCISSOR_TEST);
- glViewport(0,0,m.width,m.height);
+ auto enter=[&](){glUseProgram(m.current->id);glBindVertexArray(m.vao);
+  glDisable(GL_DEPTH_TEST);glDisable(GL_CULL_FACE);glEnable(GL_SCISSOR_TEST);glViewport(0,0,m.width,m.height);};
+ enter();
  m.setUniforms(scene,renderW,renderH);
  Rays rays(scene);
  // Each draw call is sized to ~target ms (rows when cheap, pixel runs of one row when a single row is too slow).
  const double target=std::max(2.0,std::min(12.0,double(budgetMs)));
  bool complete=true;
- for(int e=0;e<m.eyeCount;++e){
-  glBindFramebuffer(GL_FRAMEBUFFER,m.sceneFbo(e));
+ for(;;){
+  // Work on the eye that is furthest behind, so a progressive image refines both eyes evenly.
+  int e=-1;for(int k=0;k<m.eyeCount;++k)if(m.passIndex[k]<m.totalPasses&&(e<0||m.passIndex[k]<m.passIndex[e]))e=k;
+  if(e<0)break;
+  double elapsed=std::chrono::duration<double,std::milli>(Clock::now()-t0).count();
+  if(elapsed>=budgetMs){complete=false;break;}
+  const int pass=m.passIndex[e];
   float eye=m.eyeCount==1?0.f:(e?m.eyeOffset:-m.eyeOffset);
-  Vec origin=scene.camera.position+rays.right*eye;
-  glUniform1f(m.current->loc("uEye"),eye);
+  Vec origin=Vec(scene.camera.position+rays.right*eye);
+  glBindFramebuffer(GL_FRAMEBUFFER,m.accumMode?m.accumFbo[e]:m.sceneFbo(e));
+  if(m.accumMode&&pass>0){glEnable(GL_BLEND);glBlendFunc(GL_ONE,GL_ONE);}else glDisable(GL_BLEND);
+  glUniform1f(m.current->loc("uEye"),eye);glUniform1i(m.current->loc("uPass"),pass);
   glUniform3f(m.current->loc("uOrigin"),origin.x,origin.y,origin.z);
-  while(m.rowsDone[e]<renderH){
-   double elapsed=std::chrono::duration<double,std::milli>(Clock::now()-t0).count();
-   if(elapsed>=budgetMs){complete=false;break;}
-   double wanted=m.msPerPixel>0?target/m.msPerPixel:double(m.lastPixels);
-   int budget=int(std::max(1.0,std::min({wanted,double(m.lastPixels)*2.0,double(renderW)*renderH})));
-   int x0=m.colsDone[e],y0=m.rowsDone[e],w,rows;
-   if(x0==0&&budget>=renderW){w=renderW;rows=std::max(1,std::min(budget/renderW,renderH-y0));}
-   else{w=std::min(renderW-x0,budget);rows=1;}
-   glScissor(x0,y0,w,rows);
-   auto s0=Clock::now();
-   glDrawArrays(GL_TRIANGLES,0,3);glFinish();
-   double ms=std::chrono::duration<double,std::milli>(Clock::now()-s0).count();
-   int pixels=w*rows;double per=ms/pixels;
-   m.msPerPixel=m.msPerPixel>0?std::max(per,m.msPerPixel*0.8):per; // react fast to slowdowns, relax slowly
-   m.lastPixels=pixels;
-   if(x0+w>=renderW){m.colsDone[e]=0;m.rowsDone[e]+=rows;}else m.colsDone[e]=x0+w;
-  }
-  if(m.rowsDone[e]<renderH){complete=false;break;}
-  if(m.bloomOn&&!m.bloomDone[e]){
-   glDisable(GL_SCISSOR_TEST);
-   m.applyBloom(e,scene.settings.bloom);
-   // restore state for the next eye
-   glUseProgram(m.current->id);glBindVertexArray(m.vao);glEnable(GL_SCISSOR_TEST);glViewport(0,0,m.width,m.height);
-   glBindFramebuffer(GL_FRAMEBUFFER,m.sceneFbo(e));
+  double wanted=m.msPerPixel>0?target/m.msPerPixel:double(m.lastPixels);
+  int budget=int(std::max(1.0,std::min({wanted,double(m.lastPixels)*2.0,double(renderW)*renderH})));
+  int x0=m.colsDone[e],y0=m.rowsDone[e],w,rows;
+  if(x0==0&&budget>=renderW){w=renderW;rows=std::max(1,std::min(budget/renderW,renderH-y0));}
+  else{w=std::min(renderW-x0,budget);rows=1;}
+  glScissor(x0,y0,w,rows);
+  auto s0=Clock::now();
+  glDrawArrays(GL_TRIANGLES,0,3);glFinish();
+  double ms=std::chrono::duration<double,std::milli>(Clock::now()-s0).count();
+  int pixels=w*rows;double per=ms/pixels;
+  m.msPerPixel=m.msPerPixel>0?std::max(per,m.msPerPixel*0.8):per; // react fast to slowdowns, relax slowly
+  m.lastPixels=pixels;
+  if(x0+w>=renderW){m.colsDone[e]=0;m.rowsDone[e]+=rows;}else m.colsDone[e]=x0+w;
+  if(m.rowsDone[e]>=renderH){ // pass finished: publish the running mean (complete, upright image)
+   m.rowsDone[e]=0;m.colsDone[e]=0;++m.passIndex[e];
+   glDisable(GL_BLEND);
+   if(m.accumMode)m.resolve(e,m.passIndex[e]);
+   if(m.bloomOn){glDisable(GL_SCISSOR_TEST);m.applyBloom(e,scene.settings.bloom);}
+   enter();
   }
  }
- glDisable(GL_SCISSOR_TEST);glBindFramebuffer(GL_FRAMEBUFFER,0);glBindVertexArray(0);glUseProgram(0);
+ glDisable(GL_BLEND);glDisable(GL_SCISSOR_TEST);glBindFramebuffer(GL_FRAMEBUFFER,0);glBindVertexArray(0);glUseProgram(0);
  return complete;
 }
 
+int GpuRenderer::passesTotal() const{return impl->totalPasses;}
+int GpuRenderer::passesDone() const{return impl->eyeCount==2?std::min(impl->passIndex[0],impl->passIndex[1]):impl->passIndex[0];}
 int GpuRenderer::eyes() const{return impl->eyeCount;}
 unsigned GpuRenderer::texture(int eye) const{return impl->shownTex(impl->eyeCount==1?0:std::max(0,std::min(1,eye)));}
 const char* GpuRenderer::rendererName() const{return impl->renderer.c_str();}

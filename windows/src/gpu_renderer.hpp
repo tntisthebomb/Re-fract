@@ -36,5 +36,9 @@ class GpuRenderer {
  // Reads back the eye image as top-down RGB (for PNG/PPM export). Size is the full resize() size region [0,w)x[0,h) last rendered.
  bool readback(int eye,std::vector<Color>& out,int& width,int& height);
  const char* rendererName() const; // GL_RENDERER string
+ // Progressive refinement: passes published to the display texture so far (min over eyes) / passes the image will have.
+ // The image is complete and upright after every published pass; render() returns true when passesDone()==passesTotal().
+ int passesDone() const;
+ int passesTotal() const;
 };
 }

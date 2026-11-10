@@ -71,6 +71,19 @@ Left out as 3DS-only: the GPU surface (mesh) cache rows, `CAPTURE GPU SURFACE`, 
 On the GPU backend the CPU-only conveniences (`UPSCALING` live re-scaling, instant recolour, `AUTO FIT GRADIENT`)
 are not available; scenes using features the GPU renderer does not implement render on the CPU (see above).
 
+## Which backend is rendering, and performance notes
+
+* The `BACKEND` row reads `GPU`, `CPU` (you chose it), or `CPU: <reason>` (the GPU cannot render this scene, or the GPU failed to
+  start; the full reason is also in the status line). FILES tab: `GL RENDERER` / `GL VERSION` (what OpenGL driver the app
+  got - on a laptop this shows whether it is the NVIDIA GPU or a software/integrated renderer), `BACKEND IN USE`,
+  `CPU REASON`, `GPU INIT ERROR` and `GPU / CPU FRAME MS` (smoothed time per frame of each backend).
+* While the camera moves (or the stereo slider changes) the GPU renders a cheap preview copy of the scene: no refine / supersampling /
+  progressive or separate lighting / bloom / DOF and, with `FAST MOVE LIGHTING` (default), no AO, shadows, GI or point shadows;
+  the fog step counts and adaptive-detail iterations are reduced like on the CPU. The full settings return (and the render
+  restarts) when motion stops, so the final image is unchanged.
+* `--legacy` starts with the 3DS-era defaults (no zoom precision / adaptive detail / refine passes) and the headless self-test
+  prints `timing: first-frame / block1-started / first-full-pass / complete` in ms, for comparing defaults.
+
 ## Deep zoom and AUTO REFINE
 
 * **AUTO REFINE** starts the moment the camera stops: blocks 16 / 8 / 4 / 2 / 1, then it keeps adding jittered

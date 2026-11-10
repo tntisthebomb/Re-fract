@@ -64,7 +64,7 @@ bool writePPM(const std::vector<Color>& image,int w,int h,const std::string& pat
  out<<"P6\n"<<w<<' '<<h<<"\n255\n";out.write(reinterpret_cast<const char*>(image.data()),std::streamsize(image.size()*3));
  out.close();if(!out){error="Image write failed";return false;}error="IMAGE SAVED";return true;
 }
-struct Args {int tab=0,select=0,stereo=0;std::string windowShot;int frames=0,move=0,preset=-1,width=0,height=0,wheel=0;std::vector<double> dive;std::string divePrefix,scenePath;bool selftest=false,cpu=false,gpu=false;std::string screenshot,panel;};
+struct Args {int tab=0,select=0,stereo=0;std::string windowShot;int frames=0,move=0,preset=-1,width=0,height=0,wheel=0;std::vector<double> dive;std::string divePrefix,scenePath;bool legacy=false;std::vector<std::string> sets;bool selftest=false,cpu=false,gpu=false;std::string screenshot,panel;};
 Args parseArgs(int argc,char** argv){
  Args a;
  for(int i=1;i<argc;++i){std::string s=argv[i];auto next=[&]()->const char*{return i+1<argc?argv[++i]:"";};
@@ -79,6 +79,8 @@ Args parseArgs(int argc,char** argv){
   else if(s=="--dive"){std::string list=next();size_t pos=0;while(pos<list.size()){size_t end=list.find(',',pos);if(end==std::string::npos)end=list.size();a.dive.push_back(std::atof(list.substr(pos,end-pos).c_str()));pos=end+1;}}
   else if(s=="--dive-prefix")a.divePrefix=next();
   else if(s=="--scene")a.scenePath=next();
+  else if(s=="--legacy")a.legacy=true;
+  else if(s=="--set")a.sets.push_back(next());
   else if(s=="--window-shot")a.windowShot=next();
   else if(s=="--stereo"){std::string m=next();a.stereo=m=="sbs"?1:m=="ana"?2:0;}
   else if(s=="--move")a.move=std::atoi(next());
@@ -113,6 +115,9 @@ int main(int argc,char** argv){
  SDL_GL_SetSwapInterval(headless?0:1);
  if(!loadGL()){std::fprintf(stderr,"OpenGL 3.3 entry points are missing\n");return 1;}
  int maxTexture=4096;{GLint v=0;glGetIntegerv(GL_MAX_TEXTURE_SIZE,&v);if(v>0)maxTexture=v;}
+ std::string glRenderer,glVersion,gpuInitError;
+ {auto str=[](unsigned name){const unsigned char* t=glGetString(name);return std::string(t?reinterpret_cast<const char*>(t):"?");};glRenderer=str(GL_RENDERER);glVersion=str(GL_VERSION);}
+ float gpuFrameMs=0,cpuFrameMs=0;
   Display display;{std::string error;if(!display.init(error)){std::fprintf(stderr,"Display shader failed: %s\n",error.c_str());return 1;}}
  WorkerPool pool;int threads=std::max(1u,std::thread::hardware_concurrency());pool.start(threads);
  const std::string dir=dataDirectory();
@@ -121,7 +126,7 @@ int main(int argc,char** argv){
  Scene& scene=*sceneOwner;Renderer& renderer=*rendererOwner;Canvas bottom(320,240);
  renderer.setBatchShader(WorkerPool::shade,&pool);renderer.setParallelFor(WorkerPool::parallelFor,&pool);
  scene.settings.batchSize=std::max(8,std::min(32,threads*2));
- std::shared_ptr<DistanceField> distanceField;std::unique_ptr<Scene> detailScene;std::unique_ptr<TraceBenchmark> benchmark;bool benchmarkActive=false;double benchmarkStart=0;
+ std::shared_ptr<DistanceField> distanceField;std::unique_ptr<Scene> detailScene;std::unique_ptr<TraceBenchmark> benchmark;bool benchmarkActive=false,detailStale=true;double benchmarkStart=0;
  Gpu gpu;bool useGpu=false,wantGpu=true,forceCpu=false;std::string fallbackReason;
  int tab=0,selected=0,presetIndex=0,stageIndex=0,slot=0,lightIndex=0;float slider=0,workMs=0;StereoSlider sliderControl;uint64_t sliderUntil=0;
  // PC display state.
@@ -137,11 +142,15 @@ int main(int argc,char** argv){
  };
  {std::string error;
   wantGpu=!args.cpu;
-  if(wantGpu&&!gpu.init(error)){wantGpu=false;status="GPU UNAVAILABLE / CPU BACKEND";if(!error.empty())std::fprintf(stderr,"GPU init failed: %s\n",error.c_str());}
+  if(wantGpu&&!gpu.init(error)){wantGpu=false;gpuInitError=error.empty()?"unknown":error;status="CPU: GPU INIT FAILED - "+gpuInitError;std::fprintf(stderr,"GPU init failed: %s\n",gpuInitError.c_str());}
   if(!wantGpu){resIndex=0;if(status.empty())status="CPU BACKEND";}
   if(args.gpu&&!wantGpu){std::fprintf(stderr,"GPU backend requested but unavailable\n");}
   if(args.width>0&&args.height>0){customW=std::max(1,args.width);customH=std::max(1,args.height);resIndex=CustomResolution;}
   if(args.preset>=0&&args.preset<PresetCount)loadPreset(args.preset);
+  // --legacy: the 3DS-era (corridors-lighting) defaults, for timing comparisons.
+  if(args.legacy){Settings& v=scene.settings;v.adaptivePrecision=false;v.adaptiveDetail=false;v.minEpsilon=1e-6f;v.detailIterations=24;v.refineSamples=1;}
+  for(const std::string& kv:args.sets){size_t eq=kv.find('=');if(eq==std::string::npos)continue;std::string k=kv.substr(0,eq);double val=std::atof(kv.c_str()+eq+1);Settings& v=scene.settings;
+   if(k=="adaptivePrecision")v.adaptivePrecision=val!=0;else if(k=="adaptiveDetail")v.adaptiveDetail=val!=0;else if(k=="refine")v.refineSamples=int(val);else if(k=="minEpsilon")v.minEpsilon=float(val);else if(k=="steps")v.steps=int(val);else if(k=="fog")v.fog=float(val);else if(k=="previewBlock")v.previewBlock=int(val);}
   if(!args.scenePath.empty()){std::string e;if(loadScene(scene,args.scenePath,e)){presetIndex=-1;}else std::fprintf(stderr,"--scene: %s\n",e.c_str());}
  }
  // Resolve the active render size (clamped to the GL texture limit and a memory budget for the active backend).
@@ -160,7 +169,7 @@ int main(int argc,char** argv){
  std::vector<uint64_t> uploaded(2,0);bool uploadedStereo=false;
  auto applyBackend=[&](){
   int w,h;targetSize(w,h);std::string error;
-  if(useGpu&&!gpu.ready()&&!gpu.init(error)){useGpu=false;wantGpu=false;status="GPU UNAVAILABLE / CPU BACKEND";targetSize(w,h);}
+  if(useGpu&&!gpu.ready()&&!gpu.init(error)){useGpu=false;wantGpu=false;gpuInitError=error.empty()?"unknown":error;status="CPU: GPU INIT FAILED - "+gpuInitError;targetSize(w,h);}
   if(useGpu){renderer.resize(1,1);W=w;H=h;
    if(!gpu.resize(w,h)){useGpu=false;forceCpu=true;status="GPU RESIZE FAILED / CPU BACKEND";targetSize(w,h);}}
   if(!useGpu){
@@ -175,7 +184,7 @@ int main(int argc,char** argv){
  std::string lastReason;
  auto reconcile=[&](){
   bool desired=false;std::string why;
-  if(wantGpu&&!gpu.ready()){std::string e;if(!gpu.init(e)){wantGpu=false;status="GPU UNAVAILABLE / CPU BACKEND";}}
+  if(wantGpu&&!gpu.ready()){std::string e;if(!gpu.init(e)){wantGpu=false;gpuInitError=e.empty()?"unknown":e;status="CPU: GPU INIT FAILED - "+gpuInitError;}}
   if(wantGpu&&!forceCpu){desired=Gpu::supports(scene,why);if(desired&&scene.settings.deepDouble){desired=false;why="DEEP ZOOM: CPU DOUBLE";}}
   else if(wantGpu)why="GPU SHADER FAILED";
   fallbackReason=(wantGpu&&!desired)?why:"";
@@ -297,6 +306,7 @@ int main(int argc,char** argv){
  bool panelRefresh=false;uint64_t panelRevision=1;float panelWorkMs=-1;double fpsMs=16;
  renderer.invalidate(scene,false);
  uint64_t previous=uint64_t(nowMs()),nextRepeat=0;uint32_t lastDirection=0;int lastMouseX=-1,lastMouseY=-1;
+ uint64_t nextGpuPanel=0;double timingStart=nowMs();struct {double first=-1,block1=-1,pass1=-1,complete=-1;} timing;
  Input in;int exitCode=0;struct {size_t index=0;bool arrived=false;int settle=0;} dive;
  while(true){
   uint64_t now=uint64_t(nowMs());float dt=clamp(float(now-previous)*.001f,.001f,.05f);previous=now;
@@ -436,7 +446,7 @@ int main(int argc,char** argv){
    real("FIELD OF VIEW",v.fov,5,5,170);real("MOVE SPEED",scene.camera.speed,.1f,.01f,1000);
    boolean("SURFACE SLOWDOWN",scene.camera.surfaceSpeed);real("SLOWDOWN DISTANCE",scene.camera.surfaceRange,.1f,.001f,20);real("MIN SPEED FRACTION",scene.camera.minimumSpeed,.005f,.0001f,1);
    // DISPLAY section (PC additions).
-   cycle("BACKEND",wantGpu?(useGpu?"GPU":"GPU>CPU"):"CPU",[&](int){wantGpu=!wantGpu;applyPending=true;changed=true;status=wantGpu?"BACKEND GPU":"BACKEND CPU";});
+   cycle("BACKEND",wantGpu?(useGpu?"GPU":"CPU: "+fallbackReason.substr(0,17)):(gpuInitError.empty()?"CPU":"CPU: GPU INIT FAILED"),[&](int){wantGpu=!wantGpu;applyPending=true;changed=true;status=wantGpu?"BACKEND GPU":"BACKEND CPU";});
    cycle("RENDER RESOLUTION",resolutions[resIndex].name,[&](int d){resIndex=(resIndex+d+ResolutionCount)%ResolutionCount;if(resIndex==MatchWindow)matchW=0;applyPending=true;changed=true;});
    integer("CUSTOM WIDTH",customW,64,1,1,[&](){resIndex=CustomResolution;applyPending=true;});
    integer("CUSTOM HEIGHT",customH,36,1,1,[&](){resIndex=CustomResolution;applyPending=true;});
@@ -518,6 +528,12 @@ int main(int argc,char** argv){
    realD("CAMERA X",scene.camera.position.x,.1f);realD("CAMERA Y",scene.camera.position.y,.1f);realD("CAMERA Z",scene.camera.position.z,.1f);
    real("CAMERA YAW",scene.camera.yaw,.1f,-6.3f,6.3f);real("CAMERA PITCH",scene.camera.pitch,.1f,-1.5f,1.5f);
   }else{
+   {auto chunks=[&](const std::string& label,const std::string& text){for(size_t i=0;i<std::max<size_t>(1,(text.size()+22)/23)&&i<3;++i)action(i?"  ...":label,text.substr(i*23,23),[](){});};
+    chunks("GL RENDERER",glRenderer);chunks("GL VERSION",glVersion);
+    chunks("BACKEND IN USE",useGpu?"GPU":"CPU");
+    if(!useGpu&&!fallbackReason.empty())chunks("CPU REASON",fallbackReason);
+    if(!gpuInitError.empty())chunks("GPU INIT ERROR",gpuInitError);
+    action("GPU / CPU FRAME MS",number(gpuFrameMs)+" / "+number(cpuFrameMs),[](){});}
    action("SAVE SCREENSHOT","F12 / A JPEG-MPO",[&](){screenshotRequested=true;});
    action("EXIT APP","A QUIT",[&](){exitRequested=true;});
    integer("SCENE SLOT",slot,1,0,7);
@@ -610,12 +626,19 @@ int main(int argc,char** argv){
   uint64_t beforeRevision=renderer.imageRevision();
   if(useGpu){
    float eyeOffset=activeStereo?scene.settings.eyeSeparation*slider*.5f:0;
-   // Same adaptive-detail iteration count the CPU path uses (the GPU shader renders formula.iterations as given).
+   // While moving, the GPU gets a copy with the cheap preview settings (what the CPU "fast" preview skips): no refine /
+   // supersampling / progressive or separate lighting / bloom / DOF, and (with FAST MOVE LIGHTING) no AO, shadows, GI or point
+   // shadows, plus the reduced fog step counts. Same adaptive-detail iteration count as the CPU path. Full settings return when motion stops.
    static int gpuIterations=-1;Scene* gpuScene=&scene;
-   if(scene.settings.adaptiveDetail){
-    if(!detailScene||changed)detailScene=std::make_unique<Scene>(scene);
+   if(changed)detailStale=true;
+   if(scene.settings.adaptiveDetail||moving){
+    if(!detailScene||detailStale){detailScene=std::make_unique<Scene>(scene);detailStale=false;}
     detailScene->settings=scene.settings;detailScene->camera=scene.camera;
     detailScene->formula.iterations=renderingIterations(scene,moving);gpuScene=detailScene.get();
+    if(moving){Settings& v=detailScene->settings;
+     v.quality=false;v.samples=1;v.refineSamples=1;v.lightingPasses=1;v.progressiveLighting=false;v.separateLighting=false;v.bloom=0;v.dof=false;v.dofSamples=1;
+     if(v.previewLighting){v.ao=0;v.shadow=0;v.giSamples=0;v.pointShadows=false;}
+     if(v.volumetricFog){v.fogSteps=std::max(8,v.fogSteps/4);v.fogShadowSteps/=2;}}
    }
    bool need=changed||eyeOffset!=gpuEye||moving||gpuMoving||gpuScene->formula.iterations!=gpuIterations;
    gpuIterations=gpuScene->formula.iterations;
@@ -633,7 +656,8 @@ int main(int argc,char** argv){
   if(!useGpu){
    Scene* rendering=&scene;
    if(scene.settings.adaptiveDetail){
-    if(!detailScene||changed)detailScene=std::make_unique<Scene>(scene);
+    if(changed)detailStale=true;
+    if(!detailScene||detailStale){detailScene=std::make_unique<Scene>(scene);detailStale=false;}
     detailScene->settings=scene.settings;detailScene->camera=scene.camera;
     detailScene->formula.iterations=renderingIterations(scene,motion||now<sliderUntil);rendering=detailScene.get();
    }
@@ -664,9 +688,10 @@ int main(int argc,char** argv){
    }
   }
   workMs=float(nowMs()-workStart);
+  if(useGpu)gpuFrameMs=gpuFrameMs*.9f+workMs*.1f;else cpuFrameMs=cpuFrameMs*.9f+float(nowMs()-frameStart)*.1f;
   bool progressShown=false;(void)progressShown;
-  if(panelRefresh||menuDirty||changed||down||repeat||wheelSteps||motion||now<sliderUntil||workMs!=panelWorkMs||renderer.imageRevision()!=beforeRevision||useGpu){
-   panelRefresh=false;panelWorkMs=workMs;
+  if(panelRefresh||menuDirty||changed||down||repeat||wheelSteps||motion||now<sliderUntil||workMs!=panelWorkMs||renderer.imageRevision()!=beforeRevision||(useGpu&&now>=nextGpuPanel)){
+   panelRefresh=false;nextGpuPanel=now+100;panelWorkMs=workMs;
    ++panelRevision;std::vector<Row> rows;rows.reserve(fields.size());for(const Field& f:fields)rows.push_back(f.row);
    int block=useGpu?(moving?motionDiv:1):renderer.currentBlock();float progress=useGpu?(gpuDone?1.f:.5f):renderer.progress(scene);
    drawPanel(bottom,tab,selected,rows,status,presetIndex<0?"CUSTOM SCENE":presetName(presetIndex),block,progress,scene.settings.quality,workMs);
@@ -678,6 +703,7 @@ int main(int argc,char** argv){
   if(screenshotRequested){screenshotRequested=false;takeScreenshot(activeStereo);menuDirty=true;}
   present(bottom);
   ++frameNumber;
+  if(headless){double t=nowMs()-timingStart;if(timing.first<0)timing.first=t;if(timing.block1<0&&!useGpu&&renderer.currentBlock()==1)timing.block1=t;if(timing.pass1<0&&!useGpu&&renderer.accumulatedPasses()>=1)timing.pass1=t;if(timing.complete<0&&(useGpu?gpuDone:renderer.complete()))timing.complete=t;}
   wantWindowShot=!args.windowShot.empty()&&headless&&int(frameNumber)+1>=args.frames;
   fpsMs=fpsMs*.9+(nowMs()-frameStart)*.1;
   if(!useGpu)renderer.endFrame(scene,float(nowMs()-frameStart),workMs,renderer.jobs()-beforeJobs);
@@ -692,6 +718,7 @@ int main(int argc,char** argv){
   else{
    size_t distinct=0;Color first=img[0];for(const Color& c:img)if(c.r!=first.r||c.g!=first.g||c.b!=first.b){++distinct;}
    std::printf("selftest: backend=%s %dx%d frames=%llu varying-pixels=%zu\n",useGpu?"gpu":"cpu",w,h,(unsigned long long)frameNumber,distinct);
+   std::printf("timing: first-frame=%.0fms block1-started=%.0fms first-full-pass=%.0fms complete=%.0fms\n",timing.first,timing.block1,timing.pass1,timing.complete);
    if(args.wheel&&!fields.empty())std::printf("selftest: wheel %d on row %s = %s\n",args.wheel,fields[selected].row.label.c_str(),fields[selected].row.value.c_str());
    if(distinct==0){std::fprintf(stderr,"selftest: image is uniform\n");exitCode=2;}
    if(!args.screenshot.empty()&&!writePPM(img,w,h,args.screenshot,error)){std::fprintf(stderr,"%s\n",error.c_str());exitCode=2;}
